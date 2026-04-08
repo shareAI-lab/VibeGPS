@@ -52,7 +52,7 @@ export function createSessionTracker(deps: {
 }) {
   const sessions = new Map<string, SessionState>();
 
-  async function onSessionStart(payload: StartPayload): Promise<void> {
+  async function onSessionStart(payload: StartPayload): Promise<GitSnapshot> {
     const snapshot = await deps.collectGitSnapshot(payload.cwd);
     sessions.set(payload.session_id, {
       turn: 0,
@@ -61,6 +61,7 @@ export function createSessionTracker(deps: {
       sessionTotal: { added: 0, removed: 0 },
       lastReportTurn: 0
     });
+    return snapshot;
   }
 
   async function onStop(payload: StopPayload): Promise<TrackerTurnRecord> {

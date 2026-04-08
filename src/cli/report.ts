@@ -1,3 +1,4 @@
+import { orchestrateReportFromStore } from '../reporter/orchestrator.js';
 import { openInBrowser } from '../utils/open.js';
 
 export async function runReportCommand(
@@ -17,8 +18,6 @@ export async function runReportCommand(
 }
 
 export const defaultReportDeps = {
-  orchestrate: async () => {
-    throw new Error('report orchestrator is not wired yet');
-  },
+  orchestrate: orchestrateReportFromStore,
   open: openInBrowser
 };

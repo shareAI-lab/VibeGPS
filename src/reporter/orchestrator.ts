@@ -1,5 +1,13 @@
 import { runAnalyzer } from '../analyzer/agent-runner.js';
 import { parseLLMResult } from '../analyzer/parser.js';
+import { REPORTS_DIR, SESSIONS_DIR, VIBEGPS_HOME } from '../constants.js';
+import { loadConfig } from '../store/config.js';
+import {
+  listSessionMetas,
+  readSessionMeta,
+  readTurns,
+  updateSessionMeta
+} from '../store/session-store.js';
 import { renderHtmlReport } from './html-renderer.js';
 import { renderTerminalSummary } from './terminal-renderer.js';
 
@@ -57,4 +65,62 @@ export async function generateReport(input: {
     output,
     reportPath
   };
+}
+
+export async function orchestrateReportFromStore(
+  sessionId?: string,
+  options?: {
+    vibegpsHome?: string;
+    sessionsDir?: string;
+    reportsDir?: string;
+  }
+): Promise<{ sessionId: string; output: string; reportPath: string }> {
+  const vibegpsHome = options?.vibegpsHome ?? VIBEGPS_HOME;
+  const sessionsDir = options?.sessionsDir ?? SESSIONS_DIR;
+  const reportsDir = options?.reportsDir ?? REPORTS_DIR;
+  const config = await loadConfig(vibegpsHome);
+
+  let targetSessionId = sessionId;
+  if (!targetSessionId) {
+    const sessions = await listSessionMetas(sessionsDir);
+    if (sessions.length === 0) {
+      throw new Error('no session data found');
+    }
+    targetSessionId = sessions[0].sessionId;
+  }
+
+  const meta = await readSessionMeta(sessionsDir, targetSessionId);
+  const turns = await readTurns(sessionsDir, targetSessionId);
+  if (turns.length === 0) {
+    throw new Error(`session ${targetSessionId} has no turns`);
+  }
+
+  const uniqueFiles = Array.from(
+    new Set(turns.flatMap((turn) => turn.filesChanged))
+  ).slice(0, 100);
+  const files = uniqueFiles.map((file) => `${file} (changed)`);
+  const diff = turns.map((turn) => turn.diffContent).join('\n');
+  const lastAssistantMessage = turns[turns.length - 1].lastAssistantMessage;
+
+  const result = await generateReport({
+    sessionId: targetSessionId,
+    reportRoot: reportsDir,
+    analyzerConfig: config.analyzer,
+    totals: {
+      added: meta.totalAdded,
+      removed: meta.totalRemoved,
+      files: uniqueFiles.length,
+      turns: meta.turnCount
+    },
+    files,
+    diff,
+    lastAssistantMessage
+  });
+
+  await updateSessionMeta(sessionsDir, targetSessionId, {
+    lastReportAt: Date.now(),
+    lastReportTurn: meta.turnCount
+  });
+
+  return result;
 }

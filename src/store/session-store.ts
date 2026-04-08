@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export interface SessionMeta {
@@ -33,6 +33,10 @@ export interface TurnRecord {
   lastAssistantMessage: string;
 }
 
+function sessionPath(root: string, sessionId: string): string {
+  return join(root, sessionId);
+}
+
 export async function createSession(
   root: string,
   init: {
@@ -41,7 +45,7 @@ export async function createSession(
     baselineHead: string;
   }
 ): Promise<void> {
-  const base = join(root, init.sessionId);
+  const base = sessionPath(root, init.sessionId);
   await mkdir(join(base, 'turns'), { recursive: true });
   await mkdir(join(base, 'diffs'), { recursive: true });
 
@@ -59,7 +63,7 @@ export async function createSession(
 }
 
 export async function appendTurn(root: string, sessionId: string, turn: TurnRecord): Promise<void> {
-  const base = join(root, sessionId);
+  const base = sessionPath(root, sessionId);
   const turnName = `turn-${String(turn.turn).padStart(3, '0')}`;
 
   await writeFile(join(base, 'turns', `${turnName}.json`), JSON.stringify(turn, null, 2), 'utf8');
@@ -72,4 +76,69 @@ export async function appendTurn(root: string, sessionId: string, turn: TurnReco
   meta.totalRemoved += Math.max(turn.delta.removed, 0);
 
   await writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf8');
+}
+
+export async function readSessionMeta(root: string, sessionId: string): Promise<SessionMeta> {
+  const raw = await readFile(join(sessionPath(root, sessionId), 'meta.json'), 'utf8');
+  return JSON.parse(raw) as SessionMeta;
+}
+
+export async function sessionExists(root: string, sessionId: string): Promise<boolean> {
+  try {
+    await readFile(join(sessionPath(root, sessionId), 'meta.json'), 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function readTurns(root: string, sessionId: string): Promise<TurnRecord[]> {
+  const turnsDir = join(sessionPath(root, sessionId), 'turns');
+  const files = (await readdir(turnsDir))
+    .filter((file) => file.endsWith('.json'))
+    .sort((a, b) => a.localeCompare(b));
+
+  const turns: TurnRecord[] = [];
+  for (const file of files) {
+    const raw = await readFile(join(turnsDir, file), 'utf8');
+    turns.push(JSON.parse(raw) as TurnRecord);
+  }
+
+  return turns;
+}
+
+export async function listSessionMetas(root: string): Promise<SessionMeta[]> {
+  let entries: string[] = [];
+  try {
+    entries = await readdir(root);
+  } catch {
+    return [];
+  }
+
+  const metas: SessionMeta[] = [];
+  for (const entry of entries) {
+    try {
+      metas.push(await readSessionMeta(root, entry));
+    } catch {
+      // ignore broken session dirs
+    }
+  }
+
+  metas.sort((a, b) => b.startedAt - a.startedAt);
+  return metas;
+}
+
+export async function updateSessionMeta(
+  root: string,
+  sessionId: string,
+  patch: Partial<SessionMeta>
+): Promise<SessionMeta> {
+  const current = await readSessionMeta(root, sessionId);
+  const next = { ...current, ...patch };
+  await writeFile(
+    join(sessionPath(root, sessionId), 'meta.json'),
+    JSON.stringify(next, null, 2),
+    'utf8'
+  );
+  return next;
 }

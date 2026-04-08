@@ -23,6 +23,9 @@ describe('launcher', () => {
       port: 3456,
       close: vi.fn().mockResolvedValue(undefined)
     });
+    const createRuntime = vi.fn().mockResolvedValue({
+      handleHook: vi.fn().mockResolvedValue(undefined)
+    });
     const createTempSettings = vi.fn().mockResolvedValue('/tmp/session-1.json');
     const cleanupTempSettings = vi.fn().mockResolvedValue(undefined);
 
@@ -31,6 +34,7 @@ describe('launcher', () => {
       userArgs: ['--resume', '--model', 'sonnet'],
       spawn,
       createHookServer,
+      createRuntime,
       createTempSettings,
       cleanupTempSettings,
       bindSignals: () => () => undefined

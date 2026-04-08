@@ -5,6 +5,7 @@ import { execa } from 'execa';
 import { TMP_HOOK_DIR } from '../constants.js';
 import { bindSignals as defaultBindSignals } from '../utils/process.js';
 import { createHookServer as defaultCreateHookServer } from './hook-server.js';
+import { createRuntime } from './runtime.js';
 import { buildMergedSettings } from './settings-merger.js';
 
 type SpawnFn = (
@@ -15,6 +16,10 @@ type SpawnFn = (
 type HookServerFactory = (
   onEvent: (event: { event: 'SessionStart' | 'Stop'; payload: Record<string, unknown> }) => Promise<void>
 ) => Promise<{ port: number; close: () => Promise<void> }>;
+
+type RuntimeFactory = () => Promise<{
+  handleHook: (event: { event: 'SessionStart' | 'Stop'; payload: Record<string, unknown> }) => Promise<void>;
+}>;
 
 export async function createTempSettingsFile(input: {
   hookPort: number;
@@ -52,6 +57,7 @@ export async function launchWrappedAgent(deps: {
   userArgs: string[];
   spawn?: SpawnFn;
   createHookServer?: HookServerFactory;
+  createRuntime?: RuntimeFactory;
   createTempSettings?: (port: number) => Promise<string>;
   cleanupTempSettings?: (settingsPath: string) => Promise<void>;
   bindSignals?: (cleanup: () => Promise<void>) => () => void;
@@ -63,11 +69,13 @@ export async function launchWrappedAgent(deps: {
         stdio: 'inherit'
       }));
   const createHookServer = deps.createHookServer ?? defaultCreateHookServer;
+  const createRuntimeFactory = deps.createRuntime ?? createRuntime;
   const createTempSettings = deps.createTempSettings ?? ((port) => createTempSettingsFile({ hookPort: port }));
   const cleanupTempSettings = deps.cleanupTempSettings ?? cleanupTempSettingsFile;
   const bindSignals = deps.bindSignals ?? defaultBindSignals;
 
-  const hookServer = await createHookServer(async () => undefined);
+  const runtime = await createRuntimeFactory();
+  const hookServer = await createHookServer(runtime.handleHook);
   const settingsPath = await createTempSettings(hookServer.port);
 
   const cleanup = async (): Promise<void> => {
