@@ -1,0 +1,42 @@
+{
+  "name": "vibegps",
+  "version": "0.1.0",
+  "description": "GPS for vibe coders using coding agents",
+  "author": "Bill Billion",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "vibegps": "./bin/vibegps.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "scripts",
+    "templates"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx bin/vibegps.ts",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "commander": "^12.1.0",
+    "execa": "^9.6.0",
+    "fast-glob": "^3.3.3",
+    "ora": "^8.2.0",
+    "simple-git": "^3.28.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.3.5",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "undici": "^7.8.0",
+    "vitest": "^3.2.4"
+  }
+}
