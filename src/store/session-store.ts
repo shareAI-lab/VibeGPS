@@ -1,3 +1,7 @@
+/**
+ * @deprecated Use snapshot-store.ts + SQLite database instead.
+ * This module is kept for backward compatibility with file-based sessions.
+ */
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FileOperation } from '../wrapper/file-change-collector.js';
