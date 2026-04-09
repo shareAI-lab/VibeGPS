@@ -4,9 +4,7 @@ import { buildReportHtml, type ReportTemplateData } from './template.js';
 
 export async function renderHtmlReport(
   reportsRoot: string,
-  data: ReportTemplateData & {
-    timeline: Array<{ turn: number; note: string }>;
-  }
+  data: ReportTemplateData
 ): Promise<string> {
   const dir = join(reportsRoot, data.sessionId);
   await mkdir(dir, { recursive: true });

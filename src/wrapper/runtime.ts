@@ -6,13 +6,24 @@ import {
   sessionExists
 } from '../store/session-store.js';
 import { collectGitSnapshot } from '../utils/git.js';
+import { openInBrowser } from '../utils/open.js';
 import { orchestrateReportFromStore } from '../reporter/orchestrator.js';
 import { createSessionTracker } from './session-tracker.js';
+import { createFileChangeCollector, type FileOperation } from './file-change-collector.js';
 
 interface HookEvent {
-  event: 'SessionStart' | 'Stop';
+  event: 'SessionStart' | 'Stop' | 'UserPromptSubmit' | 'PostToolUse';
   payload: Record<string, unknown>;
 }
+
+const REPORT_KEYWORDS = [
+  /\breport\b/i,
+  /报告/,
+  /出报告/,
+  /生成报告/,
+  /总结一下/,
+  /汇总一下/
+];
 
 function requireString(payload: Record<string, unknown>, key: string): string {
   const value = payload[key];
@@ -22,19 +33,54 @@ function requireString(payload: Record<string, unknown>, key: string): string {
   return value;
 }
 
+function extractPromptText(payload: Record<string, unknown>): string {
+  const candidates = [
+    payload.prompt,
+    payload.user_prompt,
+    payload.message,
+    payload.text,
+    payload.input,
+    payload.query
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+  return '';
+}
+
+function isReportRequested(prompt: string): boolean {
+  if (prompt.trim().length === 0) {
+    return false;
+  }
+  return REPORT_KEYWORDS.some((pattern) => pattern.test(prompt));
+}
+
 export async function createRuntime(options?: {
   vibegpsHome?: string;
   sessionsDir?: string;
   reportsDir?: string;
+  openReport?: (path: string) => Promise<void>;
+  notify?: (message: string) => void;
 }): Promise<{
   handleHook: (event: HookEvent) => Promise<void>;
 }> {
   const vibegpsHome = options?.vibegpsHome ?? VIBEGPS_HOME;
   const sessionsDir = options?.sessionsDir ?? SESSIONS_DIR;
   const reportsDir = options?.reportsDir ?? REPORTS_DIR;
+  const openReport = options?.openReport ?? openInBrowser;
+  const notify =
+    options?.notify ??
+    ((message: string) => {
+      process.stderr.write(`${message}\n`);
+    });
   const config = await loadConfig(vibegpsHome);
+  const fileChangeCollector = createFileChangeCollector();
 
   const pendingAutoReports = new Set<string>();
+  const pendingForcedReports = new Set<string>();
+  const stopPendingSessions = new Set<string>();
   const tracker = createSessionTracker({
     collectGitSnapshot,
     threshold: config.report.threshold,
@@ -82,14 +128,20 @@ export async function createRuntime(options?: {
           ? payload.last_assistant_message
           : ''
     });
+    stopPendingSessions.delete(sessionId);
 
-    await appendTurn(sessionsDir, sessionId, turn);
+    const operations = fileChangeCollector.drainOperations(sessionId);
+    const turnWithOps = { ...turn, operations };
+    await appendTurn(sessionsDir, sessionId, turnWithOps);
 
-    if (!pendingAutoReports.has(sessionId)) {
+    const shouldAutoReport = pendingAutoReports.has(sessionId);
+    const shouldForceReport = pendingForcedReports.has(sessionId);
+    if (!shouldAutoReport && !shouldForceReport) {
       return;
     }
 
     pendingAutoReports.delete(sessionId);
+    pendingForcedReports.delete(sessionId);
 
     try {
       const report = await orchestrateReportFromStore(sessionId, {
@@ -97,11 +149,51 @@ export async function createRuntime(options?: {
         sessionsDir,
         reportsDir
       });
-      process.stderr.write(`\n[VibeGPS] Auto report: file://${report.reportPath}\n`);
+      notify(report.compactOutput);
+      if (shouldForceReport) {
+        notify('[VibeGPS] 已按用户请求生成报告');
+      }
+
+      if (config.report.autoOpen) {
+        try {
+          await openReport(report.reportPath);
+          notify('[VibeGPS] 已自动打开报告页面');
+        } catch (error) {
+          const openMessage = error instanceof Error ? error.message : String(error);
+          notify(`[VibeGPS] 报告已生成，但自动打开失败: ${openMessage}`);
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`\n[VibeGPS] Auto report skipped: ${message}\n`);
+      notify(`[VibeGPS] Auto report skipped: ${message}`);
     }
+  }
+
+  async function handleUserPromptSubmit(payload: Record<string, unknown>): Promise<void> {
+    const sessionId = requireString(payload, 'session_id');
+    const cwd = requireString(payload, 'cwd');
+
+    const exists = await sessionExists(sessionsDir, sessionId);
+    if (!exists) {
+      await handleSessionStart(payload);
+    }
+
+    if (stopPendingSessions.has(sessionId)) {
+      await handleStop({
+        session_id: sessionId,
+        cwd,
+        last_assistant_message: ''
+      });
+      notify('[VibeGPS] 检测到缺失 Stop Hook，已在新一轮对话前自动补齐');
+    }
+
+    const promptText = extractPromptText(payload);
+    if (isReportRequested(promptText)) {
+      pendingForcedReports.add(sessionId);
+      notify('[VibeGPS] 检测到用户请求报告，将在本轮结束后生成');
+    }
+
+    stopPendingSessions.add(sessionId);
   }
 
   return {
@@ -113,6 +205,35 @@ export async function createRuntime(options?: {
 
       if (event.event === 'Stop') {
         await handleStop(event.payload);
+        return;
+      }
+
+      if (event.event === 'PostToolUse') {
+        const sid = event.payload.session_id;
+        if (typeof sid === 'string' && sid.length > 0) {
+          const toolName = event.payload.tool_name;
+          const toolInput = event.payload.tool_input as Record<string, unknown> | undefined;
+          if (
+            typeof toolName === 'string' &&
+            ['Write', 'Edit', 'MultiEdit'].includes(toolName) &&
+            toolInput &&
+            typeof toolInput.file_path === 'string'
+          ) {
+            fileChangeCollector.recordOperation(sid, {
+              tool: toolName as 'Write' | 'Edit' | 'MultiEdit',
+              filePath: toolInput.file_path,
+              timestamp: Date.now(),
+              oldString: typeof toolInput.old_string === 'string' ? toolInput.old_string : undefined,
+              newString: typeof toolInput.new_string === 'string' ? toolInput.new_string : undefined,
+              content: typeof toolInput.content === 'string' ? toolInput.content : undefined,
+            });
+          }
+        }
+        return;
+      }
+
+      if (event.event === 'UserPromptSubmit') {
+        await handleUserPromptSubmit(event.payload);
       }
     }
   };

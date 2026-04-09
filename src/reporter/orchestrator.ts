@@ -8,8 +8,88 @@ import {
   readTurns,
   updateSessionMeta
 } from '../store/session-store.js';
+import type { TurnRecord } from '../store/session-store.js';
+import type { FileOperation } from '../wrapper/file-change-collector.js';
 import { renderHtmlReport } from './html-renderer.js';
-import { renderTerminalSummary } from './terminal-renderer.js';
+import type { FileHeatmapEntry, TurnSummary } from './template.js';
+import { renderCompactNotification, renderTerminalSummary } from './terminal-renderer.js';
+
+function operationsToDiff(ops: FileOperation[]): string {
+  const byFile = new Map<string, FileOperation[]>();
+  for (const op of ops) {
+    const existing = byFile.get(op.filePath) ?? [];
+    existing.push(op);
+    byFile.set(op.filePath, existing);
+  }
+
+  const chunks: string[] = [];
+  for (const [file, fileOps] of byFile) {
+    const isNew = fileOps.some((op) => op.tool === 'Write');
+    chunks.push(`diff --git a/${file} b/${file}`);
+    if (isNew) {
+      chunks.push('new file mode 100644');
+      chunks.push('--- /dev/null');
+      chunks.push(`+++ b/${file}`);
+    } else {
+      chunks.push(`--- a/${file}`);
+      chunks.push(`+++ b/${file}`);
+    }
+
+    for (const op of fileOps) {
+      if (op.tool === 'Edit' && op.oldString && op.newString) {
+        const oldLines = op.oldString.split('\n');
+        const newLines = op.newString.split('\n');
+        chunks.push(`@@ -1,${oldLines.length} +1,${newLines.length} @@`);
+        for (const line of oldLines) chunks.push(`-${line}`);
+        for (const line of newLines) chunks.push(`+${line}`);
+      } else if (op.tool === 'Write' && op.content) {
+        const lines = op.content.split('\n');
+        chunks.push(`@@ -0,0 +1,${lines.length} @@`);
+        for (const line of lines) chunks.push(`+${line}`);
+      }
+    }
+  }
+
+  return chunks.join('\n');
+}
+
+function buildTurnSummaries(turns: TurnRecord[]): TurnSummary[] {
+  return turns.map((t) => {
+    const hasOperations = t.operations && t.operations.length > 0;
+    const diffContent = hasOperations
+      ? operationsToDiff(t.operations!)
+      : t.diffContent;
+
+    return {
+      turn: t.turn,
+      timestamp: t.timestamp,
+      added: Math.max(0, t.delta.added),
+      removed: Math.max(0, t.delta.removed),
+      filesChanged: t.filesChanged.length + t.newFiles.length,
+      commitDetected: t.commitDetected,
+      lastAssistantMessage: t.lastAssistantMessage,
+      diffContent,
+      operations: t.operations ?? []
+    };
+  });
+}
+
+function buildFileHeatmap(turns: TurnRecord[]): FileHeatmapEntry[] {
+  const fileChangeCount = new Map<string, number>();
+  const newFileSet = new Set<string>();
+  for (const t of turns) {
+    for (const f of t.filesChanged) {
+      fileChangeCount.set(f, (fileChangeCount.get(f) ?? 0) + 1);
+    }
+    for (const f of t.newFiles) {
+      fileChangeCount.set(f, (fileChangeCount.get(f) ?? 0) + 1);
+      newFileSet.add(f);
+    }
+  }
+  return Array.from(fileChangeCount.entries())
+    .map(([file, count]) => ({ file, totalChanges: count, isNew: newFileSet.has(file) }))
+    .sort((a, b) => b.totalChanges - a.totalChanges);
+}
 
 export async function generateReport(input: {
   sessionId: string;
@@ -28,13 +108,24 @@ export async function generateReport(input: {
   files: string[];
   diff: string;
   lastAssistantMessage: string;
+  turns: TurnRecord[];
+}, deps?: {
+  runAnalyzerFn?: typeof runAnalyzer;
 }) {
-  const raw = await runAnalyzer(input.analyzerConfig, {
-    stat: `+${input.totals.added} -${input.totals.removed}`,
-    files: input.files,
-    lastAssistantMessage: input.lastAssistantMessage,
-    diff: input.diff
-  });
+  const runAnalyzerFn = deps?.runAnalyzerFn ?? runAnalyzer;
+  let raw: string | null = null;
+  try {
+    raw = await runAnalyzerFn(input.analyzerConfig, {
+      stat: `+${input.totals.added} -${input.totals.removed}`,
+      files: input.files,
+      lastAssistantMessage: input.lastAssistantMessage,
+      diff: input.diff
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`[VibeGPS] LLM 分析失败: ${msg}\n`);
+    raw = null;
+  }
 
   const parsed = raw ? parseLLMResult(raw) : null;
   const analysis =
@@ -45,12 +136,16 @@ export async function generateReport(input: {
       highlights: ['已输出完整变更明细']
     };
 
+  const turnSummaries = buildTurnSummaries(input.turns);
+  const fileHeatmap = buildFileHeatmap(input.turns);
+
   const reportPath = await renderHtmlReport(input.reportRoot, {
     sessionId: input.sessionId,
     generatedAt: Date.now(),
     totals: input.totals,
     analysis,
-    timeline: []
+    turnSummaries,
+    fileHeatmap
   });
 
   const output = renderTerminalSummary({
@@ -60,9 +155,17 @@ export async function generateReport(input: {
     reportPath
   });
 
+  const compactOutput = renderCompactNotification({
+    sessionId: input.sessionId,
+    totals: input.totals,
+    analysis,
+    reportPath
+  });
+
   return {
     sessionId: input.sessionId,
     output,
+    compactOutput,
     reportPath
   };
 }
@@ -74,7 +177,7 @@ export async function orchestrateReportFromStore(
     sessionsDir?: string;
     reportsDir?: string;
   }
-): Promise<{ sessionId: string; output: string; reportPath: string }> {
+): Promise<{ sessionId: string; output: string; compactOutput: string; reportPath: string }> {
   const vibegpsHome = options?.vibegpsHome ?? VIBEGPS_HOME;
   const sessionsDir = options?.sessionsDir ?? SESSIONS_DIR;
   const reportsDir = options?.reportsDir ?? REPORTS_DIR;
@@ -95,10 +198,12 @@ export async function orchestrateReportFromStore(
     throw new Error(`session ${targetSessionId} has no turns`);
   }
 
-  const uniqueFiles = Array.from(
-    new Set(turns.flatMap((turn) => turn.filesChanged))
-  ).slice(0, 100);
-  const files = uniqueFiles.map((file) => `${file} (changed)`);
+  const changedFiles = turns.flatMap((turn) => turn.filesChanged);
+  const newFiles = turns.flatMap((turn) => turn.newFiles);
+  const uniqueFiles = Array.from(new Set([...changedFiles, ...newFiles])).slice(0, 100);
+  const files = uniqueFiles.map((file) =>
+    newFiles.includes(file) ? `${file} (new)` : `${file} (changed)`
+  );
   const diff = turns.map((turn) => turn.diffContent).join('\n');
   const lastAssistantMessage = turns[turns.length - 1].lastAssistantMessage;
 
@@ -114,7 +219,8 @@ export async function orchestrateReportFromStore(
     },
     files,
     diff,
-    lastAssistantMessage
+    lastAssistantMessage,
+    turns
   });
 
   await updateSessionMeta(sessionsDir, targetSessionId, {

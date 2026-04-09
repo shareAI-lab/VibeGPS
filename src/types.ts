@@ -8,6 +8,8 @@ export interface AnalyzerConfig {
   prefer: 'claude' | 'codex';
   timeout: number;
   enabled: boolean;
+  apiKey?: string;
+  model?: string;
 }
 
 export interface VibegpsConfig {

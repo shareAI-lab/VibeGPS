@@ -13,7 +13,10 @@ export function createProgram(): Command {
     .allowUnknownOption(true)
     .description('Wrapper launch Claude Code')
     .action(async (args: string[] = []) => {
-      await runClaudeCommand(args);
+      const exitCode = await runClaudeCommand(args);
+      if (exitCode !== 0) {
+        process.exitCode = exitCode;
+      }
     });
 
   program
@@ -21,7 +24,10 @@ export function createProgram(): Command {
     .allowUnknownOption(true)
     .description('Wrapper launch Codex CLI')
     .action(async (args: string[] = []) => {
-      await runCodexCommand(args);
+      const exitCode = await runCodexCommand(args);
+      if (exitCode !== 0) {
+        process.exitCode = exitCode;
+      }
     });
 
   program

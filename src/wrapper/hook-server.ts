@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 
 export interface HookEnvelope {
-  event: 'SessionStart' | 'Stop';
+  event: 'SessionStart' | 'Stop' | 'UserPromptSubmit' | 'PostToolUse';
   payload: Record<string, unknown>;
 }
 
@@ -32,6 +32,8 @@ export async function createHookServer(onEvent: (event: HookEnvelope) => Promise
           return;
         }
 
+        const normalizedEvent = envelope.event === 'AfterToolUse' ? 'PostToolUse' : envelope.event;
+        envelope.event = normalizedEvent;
         await onEvent(envelope);
 
         res.statusCode = 200;

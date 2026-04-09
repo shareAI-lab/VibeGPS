@@ -23,3 +23,22 @@ export function renderTerminalSummary(input: {
     `报告: file://${input.reportPath}`
   ].join('\n');
 }
+
+export function renderCompactNotification(input: {
+  sessionId: string;
+  totals: { added: number; removed: number; files: number; turns: number };
+  analysis: { summary: string };
+  reportPath: string;
+}): string {
+  const summary = input.analysis.summary.length > 40
+    ? `${input.analysis.summary.slice(0, 37)}...`
+    : input.analysis.summary || '无摘要';
+  return [
+    `[VibeGPS]`,
+    `+${input.totals.added} -${input.totals.removed}`,
+    `${input.totals.files} files`,
+    `${input.totals.turns} turns`,
+    `${summary}`,
+    `file://${input.reportPath}`
+  ].join(' | ');
+}

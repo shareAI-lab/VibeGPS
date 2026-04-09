@@ -146,4 +146,37 @@ describe('session tracker', () => {
     expect(onAutoReport).toHaveBeenCalledTimes(1);
     expect(onAutoReport).toHaveBeenCalledWith('s3');
   });
+
+  it('triggers auto report on first stop when threshold is already reached', async () => {
+    const collectGitSnapshot = vi
+      .fn()
+      .mockResolvedValueOnce({
+        headHash: 'abc',
+        cumulative: { added: 0, removed: 0 },
+        filesChanged: [],
+        newFiles: [],
+        diffContent: ''
+      })
+      .mockResolvedValueOnce({
+        headHash: 'abc',
+        cumulative: { added: 210, removed: 20 },
+        filesChanged: ['a.ts'],
+        newFiles: [],
+        diffContent: 'd1'
+      });
+
+    const onAutoReport = vi.fn().mockResolvedValue(undefined);
+    const tracker = createSessionTracker({
+      collectGitSnapshot,
+      threshold: 200,
+      minTurnsBetween: 3,
+      onAutoReport
+    });
+
+    await tracker.onSessionStart({ session_id: 's4', cwd: '/tmp/app' });
+    await tracker.onStop({ session_id: 's4', cwd: '/tmp/app' });
+
+    expect(onAutoReport).toHaveBeenCalledTimes(1);
+    expect(onAutoReport).toHaveBeenCalledWith('s4');
+  });
 });

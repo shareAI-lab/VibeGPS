@@ -1,4 +1,5 @@
 import type { GitSnapshot } from '../utils/git.js';
+import type { FileOperation } from './file-change-collector.js';
 
 interface SessionState {
   turn: number;
@@ -42,6 +43,7 @@ export interface TrackerTurnRecord {
   newFiles: string[];
   diffContent: string;
   lastAssistantMessage: string;
+  operations: FileOperation[];
 }
 
 export function createSessionTracker(deps: {
@@ -87,7 +89,10 @@ export function createSessionTracker(deps: {
     state.sessionTotal.removed += Math.max(0, delta.removed);
 
     const total = state.sessionTotal.added + state.sessionTotal.removed;
-    if (total >= deps.threshold && state.turn - state.lastReportTurn >= deps.minTurnsBetween) {
+    // 设计意图：首个达到阈值的回合应立即触发报告，后续再按最小回合间隔节流。
+    const intervalSatisfied =
+      state.lastReportTurn === 0 || state.turn - state.lastReportTurn >= deps.minTurnsBetween;
+    if (total >= deps.threshold && intervalSatisfied) {
       state.lastReportTurn = state.turn;
       await deps.onAutoReport(payload.session_id);
     }
@@ -102,7 +107,8 @@ export function createSessionTracker(deps: {
       filesChanged: snapshot.filesChanged,
       newFiles: snapshot.newFiles,
       diffContent: snapshot.diffContent,
-      lastAssistantMessage: payload.last_assistant_message ?? ''
+      lastAssistantMessage: payload.last_assistant_message ?? '',
+      operations: []
     };
   }
 

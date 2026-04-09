@@ -7,6 +7,7 @@ export async function runReportCommand(
     orchestrate: (sessionId?: string) => Promise<{
       sessionId: string;
       output: string;
+      compactOutput: string;
       reportPath: string;
     }>;
     open: (path: string) => Promise<void>;

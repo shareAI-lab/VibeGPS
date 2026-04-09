@@ -1,5 +1,6 @@
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { FileOperation } from '../wrapper/file-change-collector.js';
 
 export interface SessionMeta {
   sessionId: string;
@@ -31,6 +32,7 @@ export interface TurnRecord {
   newFiles: string[];
   diffContent: string;
   lastAssistantMessage: string;
+  operations?: FileOperation[];
 }
 
 function sessionPath(root: string, sessionId: string): string {
@@ -47,7 +49,6 @@ export async function createSession(
 ): Promise<void> {
   const base = sessionPath(root, init.sessionId);
   await mkdir(join(base, 'turns'), { recursive: true });
-  await mkdir(join(base, 'diffs'), { recursive: true });
 
   const meta: SessionMeta = {
     sessionId: init.sessionId,
@@ -67,7 +68,6 @@ export async function appendTurn(root: string, sessionId: string, turn: TurnReco
   const turnName = `turn-${String(turn.turn).padStart(3, '0')}`;
 
   await writeFile(join(base, 'turns', `${turnName}.json`), JSON.stringify(turn, null, 2), 'utf8');
-  await writeFile(join(base, 'diffs', `${turnName}.diff`), turn.diffContent, 'utf8');
 
   const metaPath = join(base, 'meta.json');
   const meta = JSON.parse(await readFile(metaPath, 'utf8')) as SessionMeta;
