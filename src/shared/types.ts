@@ -29,6 +29,11 @@ export interface VibegpsConfig {
     autoGenerate: boolean;
     maxContextFiles: number;
     maxPatchCharsPerFile: number;
+    slideGenerator?: {
+      enabled: boolean;
+      maxSlides: number;
+      minSlides: number;
+    };
   };
   tracking: {
     ignoreGitDir: boolean;
@@ -128,7 +133,7 @@ export interface Report {
   fromCheckpointId: string;
   toCheckpointId: string;
   trigger: ReportTrigger;
-  format: "html" | "md" | "json";
+  format: "html" | "md" | "json" | "slide";
   summary: string;
   path: string;
 }

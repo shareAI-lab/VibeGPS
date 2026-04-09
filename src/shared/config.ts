@@ -27,7 +27,12 @@ export const DEFAULT_CONFIG: VibegpsConfig = {
     analyzer: "codex",
     autoGenerate: true,
     maxContextFiles: 6,
-    maxPatchCharsPerFile: 1800
+    maxPatchCharsPerFile: 1800,
+    slideGenerator: {
+      enabled: true,
+      maxSlides: 12,
+      minSlides: 5
+    }
   },
   tracking: {
     ignoreGitDir: true,
@@ -47,7 +52,11 @@ export function normalizeConfig(input?: Partial<VibegpsConfig>): VibegpsConfig {
     },
     report: {
       ...DEFAULT_CONFIG.report,
-      ...input?.report
+      ...input?.report,
+      slideGenerator: {
+        ...DEFAULT_CONFIG.report.slideGenerator,
+        ...input?.report?.slideGenerator
+      }
     },
     tracking: {
       ...DEFAULT_CONFIG.tracking,
