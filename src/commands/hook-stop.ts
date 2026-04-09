@@ -1,4 +1,4 @@
-﻿import { Command } from "commander";
+import { Command } from "commander";
 import { runStopHook } from "../services/hook-stop";
 
 export function registerHookStopCommand(program: Command): void {
@@ -7,6 +7,11 @@ export function registerHookStopCommand(program: Command): void {
     .description("Internal Codex Stop hook entrypoint")
     .action(async () => {
       const output = await runStopHook(process.cwd());
-      process.stdout.write(JSON.stringify(output));
+      process.stdout.write(
+        JSON.stringify({
+          continue: output.continue,
+          systemMessage: output.systemMessage
+        })
+      );
     });
 }
