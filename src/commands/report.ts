@@ -1,6 +1,7 @@
-﻿import { existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { Command } from "commander";
 import { DEFAULT_CONFIG, normalizeConfig, type VibegpsConfig } from "../shared";
+import type { Report } from "../shared";
 import { getGitState } from "../utils/git";
 import { readJson } from "../utils/json";
 import { getWorkspacePaths } from "../utils/workspace";
@@ -14,11 +15,19 @@ export function registerReportCommand(program: Command): void {
   program
     .command("report")
     .description("Generate a manual report for the current branch track")
-    .action(() => {
+    .option("--format <format>", "Report format: html, md, or slide", undefined)
+    .action((options: { format?: string }) => {
       const root = process.cwd();
       const paths = getWorkspacePaths(root);
       if (!existsSync(paths.stateDbFile)) {
         console.log("VibeGPS is not initialized in this workspace.");
+        return;
+      }
+
+      const validFormats = ["html", "md", "slide"];
+      const formatOverride = options.format as Report["format"] | undefined;
+      if (formatOverride && !validFormats.includes(formatOverride)) {
+        console.log(`Invalid format: ${options.format}. Valid options: ${validFormats.join(", ")}`);
         return;
       }
 
@@ -47,7 +56,8 @@ export function registerReportCommand(program: Command): void {
         config,
         reportsDir: paths.reportsDir,
         deltaPatchesDir: paths.deltaPatchesDir,
-        trigger: "manual"
+        trigger: "manual",
+        formatOverride
       });
 
       generateProjectDigest(root, workspace.workspaceId, paths);

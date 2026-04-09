@@ -7,6 +7,7 @@ import { nowIso } from "../utils/time";
 import { getLatestReport, insertReport, listDeltasForBranch } from "./db";
 import { recordRecentReport } from "./global-index";
 import { analyzeReport, type AnalyzerContext, type ReportAggregate } from "./report-analyzer";
+import { generateSlideHtml } from "./slide-generator";
 import type Database from "better-sqlite3";
 
 export interface ReportWindow {
@@ -1248,11 +1249,21 @@ export function generateReport(
     reportsDir: string;
     deltaPatchesDir: string;
     trigger: Report["trigger"];
+    formatOverride?: Report["format"];
   }
 ): Report {
+  const format = input.formatOverride ?? input.config.report.defaultFormat;
   const window = resolveReportWindow(db, input.branchTrack.branchTrackId, input.initCheckpoint, input.currentCheckpoint);
-  const analysis = analyzeReport(
-    buildAnalyzerContext(
+
+  const reportId = createId("report");
+  const reportDir = join(input.reportsDir, reportId);
+  mkdirSync(reportDir, { recursive: true });
+
+  let slideHtml: string | null = null;
+  let analysis: ReportAnalysis | undefined;
+
+  if (format === "slide") {
+    const slideContext = buildAnalyzerContext(
       {
         workspaceRoot: input.workspaceRoot,
         branchTrack: input.branchTrack,
@@ -1262,17 +1273,43 @@ export function generateReport(
         trigger: input.trigger
       },
       window
-    ),
-    input.config
-  );
+    );
 
-  const reportId = createId("report");
-  const reportDir = join(input.reportsDir, reportId);
-  mkdirSync(reportDir, { recursive: true });
+    const slideOptions = input.config.report.slideGenerator ?? { enabled: true, maxSlides: 12, minSlides: 5 };
+    slideHtml = generateSlideHtml(slideContext, {
+      ...slideOptions,
+      workspaceRoot: input.workspaceRoot
+    });
+  }
+
+  if (format !== "slide" || !slideHtml) {
+    // Original path: analyze + render html/md
+    analysis = analyzeReport(
+      buildAnalyzerContext(
+        {
+          workspaceRoot: input.workspaceRoot,
+          branchTrack: input.branchTrack,
+          currentCheckpoint: input.currentCheckpoint,
+          config: input.config,
+          deltaPatchesDir: input.deltaPatchesDir,
+          trigger: input.trigger
+        },
+        window
+      ),
+      input.config
+    );
+  }
 
   const htmlPath = join(reportDir, "index.html");
   const mdPath = join(reportDir, "report.md");
-  const reportPath = input.config.report.defaultFormat === "md" ? mdPath : htmlPath;
+  const slidePath = join(reportDir, "slide.html");
+
+  const actualFormat = (format === "slide" && slideHtml) ? "slide" : (format === "slide" ? "html" : format);
+  const reportPath = actualFormat === "slide"
+    ? slidePath
+    : actualFormat === "md"
+      ? mdPath
+      : htmlPath;
 
   const report: Report = {
     reportId,
@@ -1283,21 +1320,27 @@ export function generateReport(
     fromCheckpointId: window.fromCheckpointId,
     toCheckpointId: input.currentCheckpoint.checkpointId,
     trigger: input.trigger,
-    format: input.config.report.defaultFormat,
-    summary: analysis.headline,
+    format: actualFormat,
+    summary: analysis?.headline ?? "Slide Report",
     path: reportPath
   };
 
-  writeFileSync(htmlPath, renderHtml(report, window, analysis, input.deltaPatchesDir), "utf8");
-  if (input.config.report.alsoEmitMarkdown || input.config.report.defaultFormat === "md") {
-    writeFileSync(mdPath, renderMarkdown(report, window, analysis), "utf8");
+  if (slideHtml && actualFormat === "slide") {
+    writeFileSync(slidePath, slideHtml, "utf8");
+  }
+
+  if (analysis) {
+    writeFileSync(htmlPath, renderHtml(report, window, analysis, input.deltaPatchesDir), "utf8");
+    if (input.config.report.alsoEmitMarkdown || actualFormat === "md") {
+      writeFileSync(mdPath, renderMarkdown(report, window, analysis), "utf8");
+    }
   }
 
   writeJson(join(reportDir, "report.json"), {
     report,
     window,
     aggregate: window.aggregate,
-    analysis,
+    ...(analysis ? { analysis } : {}),
     deltas: window.deltas
   });
 

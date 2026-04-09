@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { Report, VibegpsConfig } from "../src/shared";
+import { mkdtempSync, rmSync, existsSync, writeFileSync, chmodSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import type { Report, VibegpsConfig, BranchTrack, Checkpoint, Delta } from "../src/shared";
 import { DEFAULT_CONFIG, normalizeConfig } from "../src/shared";
-import { buildSlidePrompt, validateSlideHtml } from "../src/services/slide-generator";
+import { buildSlidePrompt, generateSlideHtml, validateSlideHtml } from "../src/services/slide-generator";
 import type { AnalyzerContext } from "../src/services/report-analyzer";
+import { openDatabase, insertBranchTrack, insertCheckpoint, insertDelta } from "../src/services/db";
+import { generateReport } from "../src/services/report";
+import { buildCli } from "../src/cli";
 
 function makeTestContext(overrides?: Partial<AnalyzerContext>): AnalyzerContext {
   return {
@@ -47,6 +53,22 @@ function makeTestContext(overrides?: Partial<AnalyzerContext>): AnalyzerContext 
     ],
     ...overrides
   };
+}
+
+function withFakeCodex(scriptBody: string, run: () => void): void {
+  const binDir = mkdtempSync(join(tmpdir(), "vibegps-fake-codex-"));
+  const codexPath = join(binDir, "codex");
+  const originalPath = process.env.PATH ?? "";
+
+  try {
+    writeFileSync(codexPath, scriptBody, "utf8");
+    chmodSync(codexPath, 0o755);
+    process.env.PATH = `${binDir}:${originalPath}`;
+    run();
+  } finally {
+    process.env.PATH = originalPath;
+    rmSync(binDir, { recursive: true, force: true });
+  }
 }
 
 describe("slide format type support", () => {
@@ -179,5 +201,212 @@ describe("validateSlideHtml", () => {
 
   it("rejects markdown-wrapped HTML", () => {
     expect(validateSlideHtml('```html\n<!DOCTYPE html><html></html>\n```')).toBe(false);
+  });
+});
+
+describe("generateSlideHtml", () => {
+  it("returns HTML when codex writes a valid slide file", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "vibegps-slide-workspace-"));
+
+    try {
+      withFakeCodex(
+        `#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    out="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+cat >/dev/null
+printf '%s' '<!DOCTYPE html><html><body><section>ok</section></body></html>' > "$out"
+`,
+        () => {
+          const html = generateSlideHtml(makeTestContext({ workspaceRoot }), {
+            workspaceRoot,
+            maxSlides: 8,
+            minSlides: 3
+          });
+          expect(html).toContain("<!DOCTYPE html>");
+          expect(html).toContain("<section>ok</section>");
+        }
+      );
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when codex exits successfully but output is invalid", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "vibegps-slide-workspace-"));
+
+    try {
+      withFakeCodex(
+        `#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    out="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+cat >/dev/null
+printf '%s' 'not html' > "$out"
+`,
+        () => {
+          const html = generateSlideHtml(makeTestContext({ workspaceRoot }), {
+            workspaceRoot,
+            maxSlides: 8,
+            minSlides: 3
+          });
+          expect(html).toBeNull();
+        }
+      );
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when codex exits with failure status", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "vibegps-slide-workspace-"));
+
+    try {
+      withFakeCodex(
+        `#!/bin/sh
+cat >/dev/null
+exit 2
+`,
+        () => {
+          const html = generateSlideHtml(makeTestContext({ workspaceRoot }), {
+            workspaceRoot,
+            maxSlides: 8,
+            minSlides: 3
+          });
+          expect(html).toBeNull();
+        }
+      );
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("generateReport with slide format", () => {
+  it("falls back to html when slide generation fails (no codex available)", () => {
+    const root = mkdtempSync(join(tmpdir(), "vibegps-slide-report-"));
+    const reportsDir = join(root, "reports");
+    const deltaPatchesDir = join(root, "patches");
+    const db = openDatabase(join(root, "state.db"));
+
+    try {
+      db.prepare("INSERT INTO workspaces (workspace_id, root_path, created_at, updated_at) VALUES (?, ?, ?, ?)")
+        .run("ws_slide", root, "2026-04-09T00:00:00.000Z", "2026-04-09T00:00:00.000Z");
+
+      const branchTrack: BranchTrack = {
+        branchTrackId: "bt_slide",
+        workspaceId: "ws_slide",
+        gitBranch: "main",
+        gitHead: "head_1",
+        branchType: "named",
+        createdAt: "2026-04-09T00:00:00.000Z",
+        updatedAt: "2026-04-09T00:00:00.000Z"
+      };
+      insertBranchTrack(db, branchTrack);
+
+      const initCp: Checkpoint = {
+        checkpointId: "cp_init_slide",
+        workspaceId: "ws_slide",
+        branchTrackId: "bt_slide",
+        gitBranch: "main",
+        gitHead: "head_1",
+        createdAt: "2026-04-09T00:00:00.000Z",
+        kind: "init",
+        snapshotRef: join(root, "snap-init.json"),
+        fileCount: 1
+      };
+      const currentCp: Checkpoint = {
+        checkpointId: "cp_cur_slide",
+        workspaceId: "ws_slide",
+        branchTrackId: "bt_slide",
+        gitBranch: "main",
+        gitHead: "head_2",
+        createdAt: "2026-04-09T00:01:00.000Z",
+        kind: "turn_end",
+        parentCheckpointId: "cp_init_slide",
+        snapshotRef: join(root, "snap-cur.json"),
+        fileCount: 2
+      };
+      insertCheckpoint(db, initCp);
+      insertCheckpoint(db, currentCp);
+
+      const delta: Delta = {
+        deltaId: "delta_slide_1",
+        workspaceId: "ws_slide",
+        branchTrackId: "bt_slide",
+        gitBranch: "main",
+        fromCheckpointId: "cp_init_slide",
+        toCheckpointId: "cp_cur_slide",
+        createdAt: "2026-04-09T00:00:30.000Z",
+        source: "manual",
+        changedFiles: 1,
+        changedLines: 20,
+        addedFiles: ["src/new.ts"],
+        modifiedFiles: [],
+        deletedFiles: [],
+        items: [{ path: "src/new.ts", changeType: "added", addedLines: 20, deletedLines: 0, summary: "新模块" }]
+      };
+      const deltaPath = join(root, "delta_slide_1.json");
+      writeFileSync(deltaPath, JSON.stringify(delta), "utf8");
+      insertDelta(db, delta, deltaPath);
+
+      const config = normalizeConfig({
+        report: { analyzer: "heuristic" }
+      } as any);
+
+      // Use a fake codex that fails immediately so generateSlideHtml returns null fast
+      withFakeCodex(
+        `#!/bin/sh
+cat >/dev/null
+exit 1
+`,
+        () => {
+          const report = generateReport(db, {
+            workspaceId: "ws_slide",
+            workspaceRoot: root,
+            branchTrack,
+            currentCheckpoint: currentCp,
+            initCheckpoint: initCp,
+            config,
+            reportsDir,
+            deltaPatchesDir,
+            trigger: "manual",
+            formatOverride: "slide"
+          });
+
+          // Since codex fails, should fall back to html
+          expect(report.reportId).toBeTruthy();
+          expect(existsSync(report.path)).toBe(true);
+          // Format should be html (fallback) since codex isn't available
+          expect(report.format).toBe("html");
+        }
+      );
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("report CLI --format option", () => {
+  it("registers --format option on report command", () => {
+    const cli = buildCli();
+    const reportCmd = cli.commands.find((c) => c.name() === "report");
+    expect(reportCmd).toBeDefined();
+
+    const formatOption = reportCmd!.options.find((o) => o.long === "--format");
+    expect(formatOption).toBeDefined();
   });
 });
