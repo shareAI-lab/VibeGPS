@@ -1,5 +1,26 @@
+import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 import { createSessionTracker } from '../../src/wrapper/session-tracker.js';
+
+function createTestDb(): Database.Database {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  db.exec(`
+    CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, agent TEXT NOT NULL DEFAULT 'claude', started_at INTEGER NOT NULL, ended_at INTEGER, baseline_head TEXT NOT NULL);
+    CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER, head_hash TEXT NOT NULL, timestamp INTEGER NOT NULL, total_added INTEGER DEFAULT 0, total_removed INTEGER DEFAULT 0, file_count INTEGER DEFAULT 0, diff_content TEXT);
+    CREATE TABLE file_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER NOT NULL, file_path TEXT NOT NULL, operation TEXT NOT NULL, source TEXT NOT NULL, tool_name TEXT, lines_added INTEGER DEFAULT 0, lines_removed INTEGER DEFAULT 0, old_snippet TEXT, new_snippet TEXT, timestamp INTEGER NOT NULL);
+    CREATE TABLE turns (session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER NOT NULL, start_snapshot_id INTEGER REFERENCES snapshots(id), end_snapshot_id INTEGER REFERENCES snapshots(id), timestamp INTEGER NOT NULL, head_hash TEXT NOT NULL, commit_detected INTEGER DEFAULT 0, delta_added INTEGER DEFAULT 0, delta_removed INTEGER DEFAULT 0, last_assistant_message TEXT, operations_json TEXT, PRIMARY KEY (session_id, turn));
+    CREATE TABLE reports (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), generated_at INTEGER NOT NULL, html_path TEXT NOT NULL, trigger_type TEXT, totals_json TEXT, analysis_json TEXT);
+    CREATE TABLE agent_outputs (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER, agent TEXT NOT NULL, raw_output TEXT, parsed_json TEXT, created_at INTEGER NOT NULL);
+  `);
+  return db;
+}
+
+function insertTestSession(db: Database.Database, sessionId: string): void {
+  db.prepare(
+    'INSERT INTO sessions (id, cwd, agent, started_at, baseline_head) VALUES (?, ?, ?, ?, ?)'
+  ).run(sessionId, '/tmp/app', 'claude', Date.now(), '');
+}
 
 describe('session tracker', () => {
   it('computes delta from previous cumulative', async () => {
@@ -27,13 +48,16 @@ describe('session tracker', () => {
         diffContent: 'd2'
       });
 
+    const db = createTestDb();
     const tracker = createSessionTracker({
       collectGitSnapshot,
+      db,
       threshold: 200,
       minTurnsBetween: 3,
       onAutoReport: vi.fn()
     });
 
+    insertTestSession(db, 's1');
     await tracker.onSessionStart({ session_id: 's1', cwd: '/tmp/app' });
     const turn1 = await tracker.onStop({
       session_id: 's1',
@@ -48,6 +72,7 @@ describe('session tracker', () => {
 
     expect(turn1.delta).toEqual({ added: 80, removed: 20 });
     expect(turn2.delta).toEqual({ added: 50, removed: 15 });
+    db.close();
   });
 
   it('marks commitDetected and resets baseline when head changes', async () => {
@@ -75,13 +100,16 @@ describe('session tracker', () => {
         diffContent: 'd2'
       });
 
+    const db = createTestDb();
     const tracker = createSessionTracker({
       collectGitSnapshot,
+      db,
       threshold: 200,
       minTurnsBetween: 3,
       onAutoReport: vi.fn()
     });
 
+    insertTestSession(db, 's2');
     await tracker.onSessionStart({ session_id: 's2', cwd: '/tmp/app' });
     await tracker.onStop({
       session_id: 's2',
@@ -96,6 +124,7 @@ describe('session tracker', () => {
 
     expect(turn2.commitDetected).toBe(true);
     expect(turn2.delta).toEqual({ added: 30, removed: 5 });
+    db.close();
   });
 
   it('triggers auto report when threshold and interval are satisfied', async () => {
@@ -130,14 +159,17 @@ describe('session tracker', () => {
         diffContent: 'd3'
       });
 
+    const db = createTestDb();
     const onAutoReport = vi.fn().mockResolvedValue(undefined);
     const tracker = createSessionTracker({
       collectGitSnapshot,
+      db,
       threshold: 200,
       minTurnsBetween: 2,
       onAutoReport
     });
 
+    insertTestSession(db, 's3');
     await tracker.onSessionStart({ session_id: 's3', cwd: '/tmp/app' });
     await tracker.onStop({ session_id: 's3', cwd: '/tmp/app' });
     await tracker.onStop({ session_id: 's3', cwd: '/tmp/app' });
@@ -145,6 +177,7 @@ describe('session tracker', () => {
 
     expect(onAutoReport).toHaveBeenCalledTimes(1);
     expect(onAutoReport).toHaveBeenCalledWith('s3');
+    db.close();
   });
 
   it('triggers auto report on first stop when threshold is already reached', async () => {
@@ -165,18 +198,22 @@ describe('session tracker', () => {
         diffContent: 'd1'
       });
 
+    const db = createTestDb();
     const onAutoReport = vi.fn().mockResolvedValue(undefined);
     const tracker = createSessionTracker({
       collectGitSnapshot,
+      db,
       threshold: 200,
       minTurnsBetween: 3,
       onAutoReport
     });
 
+    insertTestSession(db, 's4');
     await tracker.onSessionStart({ session_id: 's4', cwd: '/tmp/app' });
     await tracker.onStop({ session_id: 's4', cwd: '/tmp/app' });
 
     expect(onAutoReport).toHaveBeenCalledTimes(1);
     expect(onAutoReport).toHaveBeenCalledWith('s4');
+    db.close();
   });
 });

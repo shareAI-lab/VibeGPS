@@ -1,13 +1,13 @@
-import { REPORTS_DIR, SESSIONS_DIR, VIBEGPS_HOME } from '../constants.js';
+import type Database from 'better-sqlite3';
+import { REPORTS_DIR, VIBEGPS_HOME } from '../constants.js';
 import { loadConfig } from '../store/config.js';
 import {
-  appendTurn,
-  createSession,
-  sessionExists
-} from '../store/session-store.js';
+  createSession as dbCreateSession,
+  sessionExists as dbSessionExists
+} from '../store/snapshot-store.js';
 import { collectGitSnapshot } from '../utils/git.js';
 import { openInBrowser } from '../utils/open.js';
-import { orchestrateReportFromStore } from '../reporter/orchestrator.js';
+import { orchestrateReportFromStore, orchestrateReportFromDb } from '../reporter/orchestrator.js';
 import { createSessionTracker } from './session-tracker.js';
 import { createFileChangeCollector, type FileOperation } from './file-change-collector.js';
 
@@ -58,8 +58,8 @@ function isReportRequested(prompt: string): boolean {
 }
 
 export async function createRuntime(options?: {
+  db?: Database.Database;
   vibegpsHome?: string;
-  sessionsDir?: string;
   reportsDir?: string;
   openReport?: (path: string) => Promise<void>;
   notify?: (message: string) => void;
@@ -67,7 +67,7 @@ export async function createRuntime(options?: {
   handleHook: (event: HookEvent) => Promise<void>;
 }> {
   const vibegpsHome = options?.vibegpsHome ?? VIBEGPS_HOME;
-  const sessionsDir = options?.sessionsDir ?? SESSIONS_DIR;
+  const db = options?.db;
   const reportsDir = options?.reportsDir ?? REPORTS_DIR;
   const openReport = options?.openReport ?? openInBrowser;
   const notify =
@@ -83,20 +83,31 @@ export async function createRuntime(options?: {
   const stopPendingSessions = new Set<string>();
   const tracker = createSessionTracker({
     collectGitSnapshot,
+    db: db!,
     threshold: config.report.threshold,
     minTurnsBetween: config.report.minTurnsBetween,
     onAutoReport: async (sessionId: string) => {
       pendingAutoReports.add(sessionId);
-    }
+    },
+    drainOperations: (sessionId: string) => fileChangeCollector.drainOperations(sessionId)
   });
 
   async function handleSessionStart(payload: Record<string, unknown>): Promise<void> {
     const sessionId = requireString(payload, 'session_id');
     const cwd = requireString(payload, 'cwd');
 
-    const exists = await sessionExists(sessionsDir, sessionId);
-    if (exists) {
+    if (db && dbSessionExists(db, sessionId)) {
       return;
+    }
+
+    // Create session record first so tracker can insert snapshots (FK constraint)
+    if (db) {
+      dbCreateSession(db, {
+        id: sessionId,
+        cwd,
+        agent: 'claude',
+        baselineHead: ''  // Will be set from tracker snapshot
+      });
     }
 
     const baseline = await tracker.onSessionStart({
@@ -104,19 +115,17 @@ export async function createRuntime(options?: {
       cwd
     });
 
-    await createSession(sessionsDir, {
-      sessionId,
-      cwd,
-      baselineHead: baseline.headHash
-    });
+    // Update baseline head now that we have the actual hash
+    if (db) {
+      db.prepare('UPDATE sessions SET baseline_head = ? WHERE id = ?').run(baseline.headHash, sessionId);
+    }
   }
 
   async function handleStop(payload: Record<string, unknown>): Promise<void> {
     const sessionId = requireString(payload, 'session_id');
     const cwd = requireString(payload, 'cwd');
 
-    const exists = await sessionExists(sessionsDir, sessionId);
-    if (!exists) {
+    if (db && !dbSessionExists(db, sessionId)) {
       await handleSessionStart(payload);
     }
 
@@ -130,9 +139,8 @@ export async function createRuntime(options?: {
     });
     stopPendingSessions.delete(sessionId);
 
-    const operations = fileChangeCollector.drainOperations(sessionId);
-    const turnWithOps = { ...turn, operations };
-    await appendTurn(sessionsDir, sessionId, turnWithOps);
+    // Data is already written to DB inside tracker.onStop
+    // No need to call appendTurn anymore
 
     const shouldAutoReport = pendingAutoReports.has(sessionId);
     const shouldForceReport = pendingForcedReports.has(sessionId);
@@ -144,11 +152,15 @@ export async function createRuntime(options?: {
     pendingForcedReports.delete(sessionId);
 
     try {
-      const report = await orchestrateReportFromStore(sessionId, {
-        vibegpsHome,
-        sessionsDir,
-        reportsDir
-      });
+      let report: { sessionId: string; output: string; compactOutput: string; reportPath: string };
+      if (db) {
+        report = await orchestrateReportFromDb(db, sessionId, { reportsDir });
+      } else {
+        report = await orchestrateReportFromStore(sessionId, {
+          vibegpsHome,
+          reportsDir
+        });
+      }
       notify(report.compactOutput);
       if (shouldForceReport) {
         notify('[VibeGPS] 已按用户请求生成报告');
@@ -173,8 +185,7 @@ export async function createRuntime(options?: {
     const sessionId = requireString(payload, 'session_id');
     const cwd = requireString(payload, 'cwd');
 
-    const exists = await sessionExists(sessionsDir, sessionId);
-    if (!exists) {
+    if (db && !dbSessionExists(db, sessionId)) {
       await handleSessionStart(payload);
     }
 

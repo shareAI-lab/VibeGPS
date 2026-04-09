@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
 import { SESSIONS_DIR, TMP_HOOK_DIR, VIBEGPS_HOME } from '../constants.js';
+import { openDatabase } from '../store/database.js';
 import { loadConfig } from '../store/config.js';
 import { collectGitSnapshot } from '../utils/git.js';
 import {
@@ -26,7 +27,13 @@ type HookServerFactory = (
   }) => Promise<void>
 ) => Promise<{ port: number; close: () => Promise<void> }>;
 
-type RuntimeFactory = () => Promise<{
+type RuntimeFactory = (options?: {
+  db?: import('better-sqlite3');
+  vibegpsHome?: string;
+  reportsDir?: string;
+  openReport?: (path: string) => Promise<void>;
+  notify?: (message: string) => void;
+}) => Promise<{
   handleHook: (event: {
     event: 'SessionStart' | 'Stop' | 'UserPromptSubmit';
     payload: Record<string, unknown>;
@@ -222,6 +229,10 @@ export async function launchWrappedAgent(deps: {
       process.stderr.write(`${message}\n`);
     });
 
+  // Open database
+  const dbPath = join(VIBEGPS_HOME, 'vibegps.db');
+  const db = openDatabase(dbPath);
+
   // Load config for banner threshold display
   let reportThreshold = deps.reportThreshold ?? 200;
   if (deps.reportThreshold === undefined) {
@@ -241,7 +252,7 @@ export async function launchWrappedAgent(deps: {
   try { await cleanExpiredSessions(SESSIONS_DIR, 30); } catch { /* ignore */ }
 
   if (deps.agent === 'codex') {
-    const runtime = await createRuntimeFactory();
+    const runtime = await createRuntimeFactory({ db });
     const cwd = resolveAgentCwd(deps.userArgs);
     let nativeSessionRef: { sessionId: string; cwd: string } | null = null;
     let nativeStopCount = 0;
@@ -437,6 +448,7 @@ export async function launchWrappedAgent(deps: {
       if (codexHooksCleanup) {
         await codexHooksCleanup();
       }
+      db.close();
     };
 
     const unbind = bindSignals(cleanup) ?? (() => undefined);
@@ -497,6 +509,7 @@ export async function launchWrappedAgent(deps: {
     await ensureStopHook(true);
     await hookServer.close();
     await cleanupTempSettings(settingsPath);
+    db.close();
   };
 
   const unbind = bindSignals(cleanup) ?? (() => undefined);

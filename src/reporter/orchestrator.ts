@@ -1,3 +1,4 @@
+import type Database from 'better-sqlite3';
 import { runAnalyzer } from '../analyzer/agent-runner.js';
 import { parseLLMResult } from '../analyzer/parser.js';
 import { REPORTS_DIR, SESSIONS_DIR, VIBEGPS_HOME } from '../constants.js';
@@ -9,6 +10,14 @@ import {
   updateSessionMeta
 } from '../store/session-store.js';
 import type { TurnRecord } from '../store/session-store.js';
+import {
+  getSession as dbGetSession,
+  getTurns as dbGetTurns,
+  getSessionTotalDelta as dbGetSessionTotalDelta,
+  getFileHeatmap as dbGetFileHeatmap,
+  insertReport as dbInsertReport,
+  type TurnRecord as DbTurnRecord
+} from '../store/snapshot-store.js';
 import type { FileOperation } from '../wrapper/file-change-collector.js';
 import { renderHtmlReport } from './html-renderer.js';
 import type { FileHeatmapEntry, TurnSummary } from './template.js';
@@ -226,6 +235,85 @@ export async function orchestrateReportFromStore(
   await updateSessionMeta(sessionsDir, targetSessionId, {
     lastReportAt: Date.now(),
     lastReportTurn: meta.turnCount
+  });
+
+  return result;
+}
+
+export async function orchestrateReportFromDb(
+  db: Database.Database,
+  sessionId: string,
+  options: {
+    reportsDir: string;
+    triggerType?: string;
+  }
+): Promise<{ sessionId: string; output: string; compactOutput: string; reportPath: string }> {
+  const session = dbGetSession(db, sessionId);
+  if (!session) throw new Error(`session ${sessionId} not found`);
+
+  const dbTurns = dbGetTurns(db, sessionId);
+  if (dbTurns.length === 0) throw new Error(`session ${sessionId} has no turns`);
+
+  // 获取文件热力图
+  const heatmap = dbGetFileHeatmap(db, sessionId);
+  const uniqueFiles = heatmap.map(h => h.file);
+  const delta = dbGetSessionTotalDelta(db, sessionId);
+
+  // 获取最新 turn 的 diff content
+  const latestTurn = dbTurns[dbTurns.length - 1];
+  const snapshotRow = db.prepare('SELECT diff_content FROM snapshots WHERE id = ?').get(latestTurn.endSnapshotId) as { diff_content: string | null } | undefined;
+  const diff = snapshotRow?.diff_content ?? dbTurns.map(t => {
+    if (t.operationsJson) {
+      try {
+        const ops = JSON.parse(t.operationsJson) as FileOperation[];
+        return operationsToDiff(ops);
+      } catch { /* fallback */ }
+    }
+    return '';
+  }).filter(Boolean).join('\n');
+
+  const config = await loadConfig(VIBEGPS_HOME);
+  const lastAssistantMessage = latestTurn.lastAssistantMessage ?? '';
+
+  // Convert DB turn records to session-store TurnRecord format for generateReport compatibility
+  const turns: TurnRecord[] = dbTurns.map(t => ({
+    turn: t.turn,
+    timestamp: t.timestamp,
+    headHash: t.headHash,
+    commitDetected: t.commitDetected,
+    delta: { added: t.deltaAdded, removed: t.deltaRemoved },
+    cumulative: { added: 0, removed: 0 },
+    filesChanged: [],
+    newFiles: [],
+    diffContent: t.operationsJson ? operationsToDiff(JSON.parse(t.operationsJson) as FileOperation[]) : '',
+    lastAssistantMessage: t.lastAssistantMessage ?? '',
+    operations: t.operationsJson ? JSON.parse(t.operationsJson) as FileOperation[] : []
+  }));
+
+  const result = await generateReport({
+    sessionId,
+    reportRoot: options.reportsDir,
+    analyzerConfig: config.analyzer,
+    totals: {
+      added: delta.added,
+      removed: delta.removed,
+      files: uniqueFiles.length,
+      turns: dbTurns.length
+    },
+    files: uniqueFiles.map(f => `${f} (changed)`),
+    diff,
+    lastAssistantMessage,
+    turns
+  });
+
+  // 记录报告到数据库
+  dbInsertReport(db, {
+    sessionId,
+    generatedAt: Date.now(),
+    htmlPath: result.reportPath,
+    triggerType: options.triggerType ?? null,
+    totalsJson: JSON.stringify(result),
+    analysisJson: null
   });
 
   return result;

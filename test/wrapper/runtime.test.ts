@@ -1,9 +1,25 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { execa } from 'execa';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRuntime } from '../../src/wrapper/runtime.js';
+import { getTurns, getSession } from '../../src/store/snapshot-store.js';
+
+function createTestDb(): Database.Database {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  db.exec(`
+    CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, agent TEXT NOT NULL DEFAULT 'claude', started_at INTEGER NOT NULL, ended_at INTEGER, baseline_head TEXT NOT NULL);
+    CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER, head_hash TEXT NOT NULL, timestamp INTEGER NOT NULL, total_added INTEGER DEFAULT 0, total_removed INTEGER DEFAULT 0, file_count INTEGER DEFAULT 0, diff_content TEXT);
+    CREATE TABLE file_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER NOT NULL, file_path TEXT NOT NULL, operation TEXT NOT NULL, source TEXT NOT NULL, tool_name TEXT, lines_added INTEGER DEFAULT 0, lines_removed INTEGER DEFAULT 0, old_snippet TEXT, new_snippet TEXT, timestamp INTEGER NOT NULL);
+    CREATE TABLE turns (session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER NOT NULL, start_snapshot_id INTEGER REFERENCES snapshots(id), end_snapshot_id INTEGER REFERENCES snapshots(id), timestamp INTEGER NOT NULL, head_hash TEXT NOT NULL, commit_detected INTEGER DEFAULT 0, delta_added INTEGER DEFAULT 0, delta_removed INTEGER DEFAULT 0, last_assistant_message TEXT, operations_json TEXT, PRIMARY KEY (session_id, turn));
+    CREATE TABLE reports (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), generated_at INTEGER NOT NULL, html_path TEXT NOT NULL, trigger_type TEXT, totals_json TEXT, analysis_json TEXT);
+    CREATE TABLE agent_outputs (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER, agent TEXT NOT NULL, raw_output TEXT, parsed_json TEXT, created_at INTEGER NOT NULL);
+  `);
+  return db;
+}
 
 describe('runtime hook handling', () => {
   const paths: string[] = [];
@@ -19,7 +35,6 @@ describe('runtime hook handling', () => {
 
     const repo = join(base, 'repo');
     const home = join(base, '.vibegps');
-    const sessions = join(home, 'sessions');
     const reports = join(home, 'reports');
 
     await execa('mkdir', ['-p', repo]);
@@ -54,9 +69,10 @@ describe('runtime hook handling', () => {
       'utf8'
     );
 
+    const db = createTestDb();
     const runtime = await createRuntime({
+      db,
       vibegpsHome: home,
-      sessionsDir: sessions,
       reportsDir: reports
     });
 
@@ -79,20 +95,21 @@ describe('runtime hook handling', () => {
       }
     });
 
-    const meta = JSON.parse(await readFile(join(sessions, 's1', 'meta.json'), 'utf8'));
-    expect(meta.turnCount).toBe(1);
-    expect(meta.totalAdded).toBeGreaterThan(0);
+    const session = getSession(db, 's1');
+    expect(session).not.toBeNull();
+    expect(session!.id).toBe('s1');
 
-    const turn = JSON.parse(
-      await readFile(join(sessions, 's1', 'turns', 'turn-001.json'), 'utf8')
-    );
-    expect(turn.lastAssistantMessage).toBe('done');
+    const turns = getTurns(db, 's1');
+    expect(turns.length).toBe(1);
+    expect(turns[0].lastAssistantMessage).toBe('done');
+    expect(turns[0].deltaAdded).toBeGreaterThan(0);
 
     const reportDir = join(reports, 's1');
     const latestHtml = await readFile(join(reportDir, 'latest.html'), 'utf8');
     expect(latestHtml.length).toBeGreaterThan(10);
     expect(latestHtml).toContain('变更概览');
     expect(latestHtml).toContain('Turn 时间线');
+    db.close();
   });
 
   it('auto opens report and emits summary when autoOpen is true', async () => {
@@ -101,7 +118,6 @@ describe('runtime hook handling', () => {
 
     const repo = join(base, 'repo');
     const home = join(base, '.vibegps');
-    const sessions = join(home, 'sessions');
     const reports = join(home, 'reports');
 
     await execa('mkdir', ['-p', repo]);
@@ -138,9 +154,10 @@ describe('runtime hook handling', () => {
 
     const openReport = vi.fn().mockResolvedValue(undefined);
     const messages: string[] = [];
+    const db = createTestDb();
     const runtime = await createRuntime({
+      db,
       vibegpsHome: home,
-      sessionsDir: sessions,
       reportsDir: reports,
       openReport,
       notify: (message) => messages.push(message)
@@ -171,6 +188,7 @@ describe('runtime hook handling', () => {
     );
     expect(messages.join('\n')).toContain('[VibeGPS]');
     expect(messages.join('\n')).toContain('[VibeGPS] 已自动打开报告页面');
+    db.close();
   });
 
   it('generates report when user explicitly requests report in prompt', async () => {
@@ -179,7 +197,6 @@ describe('runtime hook handling', () => {
 
     const repo = join(base, 'repo');
     const home = join(base, '.vibegps');
-    const sessions = join(home, 'sessions');
     const reports = join(home, 'reports');
 
     await execa('mkdir', ['-p', repo]);
@@ -215,9 +232,10 @@ describe('runtime hook handling', () => {
     );
 
     const messages: string[] = [];
+    const db = createTestDb();
     const runtime = await createRuntime({
+      db,
       vibegpsHome: home,
-      sessionsDir: sessions,
       reportsDir: reports,
       notify: (message) => messages.push(message)
     });
@@ -255,6 +273,7 @@ describe('runtime hook handling', () => {
     expect(messages.join('\n')).toContain('[VibeGPS] 检测到用户请求报告，将在本轮结束后生成');
     expect(messages.join('\n')).toContain('[VibeGPS] 已按用户请求生成报告');
     expect(messages.some((m) => m.includes('[VibeGPS]') && m.includes('file://'))).toBe(true);
+    db.close();
   });
 
   it('synthesizes missing stop when next prompt starts', async () => {
@@ -263,7 +282,6 @@ describe('runtime hook handling', () => {
 
     const repo = join(base, 'repo');
     const home = join(base, '.vibegps');
-    const sessions = join(home, 'sessions');
     const reports = join(home, 'reports');
 
     await execa('mkdir', ['-p', repo]);
@@ -299,9 +317,10 @@ describe('runtime hook handling', () => {
     );
 
     const messages: string[] = [];
+    const db = createTestDb();
     const runtime = await createRuntime({
+      db,
       vibegpsHome: home,
-      sessionsDir: sessions,
       reportsDir: reports,
       notify: (message) => messages.push(message)
     });
@@ -351,17 +370,12 @@ describe('runtime hook handling', () => {
       }
     });
 
-    const meta = JSON.parse(await readFile(join(sessions, 's3', 'meta.json'), 'utf8'));
-    expect(meta.turnCount).toBe(2);
+    const turns = getTurns(db, 's3');
+    expect(turns.length).toBe(2);
 
-    const turn1 = JSON.parse(
-      await readFile(join(sessions, 's3', 'turns', 'turn-001.json'), 'utf8')
-    );
-    const turn2 = JSON.parse(
-      await readFile(join(sessions, 's3', 'turns', 'turn-002.json'), 'utf8')
-    );
-    expect(turn1.delta.added).toBeGreaterThan(0);
-    expect(turn2.delta.added).toBeGreaterThan(0);
+    expect(turns[0].deltaAdded).toBeGreaterThan(0);
+    expect(turns[1].deltaAdded).toBeGreaterThan(0);
     expect(messages.join('\n')).toContain('检测到缺失 Stop Hook');
+    db.close();
   });
 });
