@@ -1,31 +1,203 @@
+<div align="center">
+
 # VibeGPS
 
-VibeGPS 是一个面向 AI 编程会话的代码演化导航工具。
+**GPS for Vibe Coders**
 
-它通过 wrapper 启动 `claude` 或 `codex`，临时注入 Hook，持续记录每轮代码变更，并在阈值触发或手动触发时生成可视化报告。
+Track, analyze, and visualize every code change your AI agent makes — automatically.
 
-## Quick Start
+[![npm version](https://img.shields.io/npm/v/vibegps?color=blue)](https://www.npmjs.com/package/vibegps)
+[![Node.js >=18](https://img.shields.io/node/v/vibegps)](https://nodejs.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-69%20passing-brightgreen)](test/)
 
-```bash
-npm i -g vibegps
-vibegps claude --resume
-vibegps report
+</div>
+
+---
+
+VibeGPS wraps your AI coding agent (Claude Code / Codex CLI) and silently records every turn: what the user asked, what files changed, what the AI did. When changes exceed a threshold — or you simply ask for a report — it generates a rich HTML report with AI-powered analysis, intent matching, and interactive diff exploration.
+
+```
+You: "Build a Flask REST API with User, Post, Comment models"
+  ↓  VibeGPS records your intent + all file changes
+AI:  Creates 731 lines across 10 files
+  ↓  Threshold exceeded → auto-triggers report
+VibeGPS:  Generates HTML report with AI analysis
+  ✅ Intent Match: FULL
+  ⚠️  Risk: JWT secret hardcoded
+  ✨ Highlight: Clean model design with FK cascades
 ```
 
-## Commands
+## Features
 
-- `vibegps claude [args]`：Wrapper 启动 Claude Code。
-- `vibegps codex [args]`：Wrapper 启动 Codex CLI。
-- `vibegps report [--session <id>]`：生成会话报告。
+- **Zero-config wrapping** — `vibegps claude` or `vibegps codex`, works out of the box
+- **Dual-agent support** — Claude Code and Codex CLI, with native hooks + polling fallback
+- **Patch-based checkpoints** — Every turn saved as a standard `.patch` file (unified diff)
+- **User intent tracking** — Stores your prompt alongside code changes for intent analysis
+- **AI-powered analysis** — Claude API → Claude CLI → Codex CLI ordered fallback chain
+- **Intent matching** — Did the AI actually do what you asked? (full / partial / deviated)
+- **Interactive HTML reports** — Trend charts, file heatmap, turn timeline, expandable diffs
+- **Auto-report trigger** — Exceeds line threshold → generates report automatically
+- **Keyword trigger** — Type "report" / "出报告" / "总结一下" in your prompt
+- **Turn deduplication** — Idempotent `session + turn` key prevents double-counting
+- **Missing hook recovery** — Auto-detects and patches missing Stop events
 
-## Reliability Notes
+## Install
 
-- Hook 注入采用临时 settings 文件，进程退出后自动清理。
-- `vibegps codex` 优先使用 Codex 原生 hooks（含 `PostToolUse`）；若环境不支持或事件缺失，会自动降级到轮询兜底并继续按轮落盘。
-- 同一轮会按 `session_id + turn_id` 做去重，避免 native Stop 与 fallback Stop 重复触发报告。
-- Codex 运行期默认降噪输出，减少对 TUI 回显的干扰。
-- Report 分析默认优先使用 Claude/Codex CLI，本地 CLI 不可用时才回退 API。
-- Diff 采集会跳过 `__pycache__` 与 `.pyc` 等二进制文件，避免分析链路被空字节污染。
-- LLM 分析失败时自动降级到静态报告。
-- 会话数据默认保留，可按保留天数做过期清理。
-- 会话收敛时支持两类触发：达到阈值自动出报告，或用户在对话中明确提出报告请求后于该轮结束出报告。
+```bash
+npm install -g vibegps
+```
+
+Requires Node.js 18+ and Git.
+
+## Usage
+
+### Wrap Claude Code
+
+```bash
+# Start Claude Code with VibeGPS tracking
+vibegps claude
+
+# Pass any Claude CLI arguments
+vibegps claude --resume
+vibegps claude -p "Create a Flask REST API"
+```
+
+### Wrap Codex CLI
+
+```bash
+# Interactive mode (with native hooks)
+vibegps codex --full-auto
+
+# Non-interactive mode
+vibegps codex exec --sandbox danger-full-access "Your prompt"
+```
+
+### Generate Reports
+
+```bash
+# Auto-generated when changes exceed threshold (default: 200 lines)
+# Or trigger by typing "report" in your prompt
+
+# Manual report for latest session
+vibegps report
+
+# Report for a specific session
+vibegps report --session <session-id>
+```
+
+## How It Works
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│  vibegps     │     │  Hook Server  │     │   Runtime    │
+│  claude/codex │────▶│  localhost    │────▶│   Handler    │
+└──────────────┘     └──────────────┘     └──────┬───────┘
+       │                                         │
+  Injects hooks via                          ┌────▼─────┐
+  settings.json / .codex/hooks.json          │ Tracker  │
+                                              └────┬─────┘
+                                                   │
+                          ┌────────────────────────┼────────────┐
+                          ▼                        ▼            ▼
+                    ┌──────────┐           ┌───────────┐  ┌─────────┐
+                    │ SQLite DB│           │ .patch    │  │ Report  │
+                    │ sessions │           │ per turn  │  │ HTML    │
+                    │ turns    │           │ unified   │  │ + AI    │
+                    │ changes  │           │ diff      │  │ analysis│
+                    └──────────┘           └───────────┘  └─────────┘
+```
+
+**Hook injection** — VibeGPS creates a temporary settings file (Claude) or modifies `.codex/hooks.json` (Codex), injecting a forwarder script that POSTs events to a local HTTP server.
+
+**Event flow** — `SessionStart` → `UserPromptSubmit` (captures intent) → `PostToolUse` (captures file ops) → `Stop` (computes delta, writes patch, triggers report).
+
+## Configuration
+
+Create `~/.vibegps/config.json`:
+
+```json
+{
+  "report": {
+    "threshold": 200,
+    "minTurnsBetween": 3,
+    "autoOpen": true
+  },
+  "analyzer": {
+    "prefer": "claude",
+    "timeout": 30000,
+    "enabled": true,
+    "apiKey": "sk-ant-...",
+    "model": "claude-sonnet-4-20250514"
+  }
+}
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `report.threshold` | `200` | Lines changed to auto-trigger report |
+| `report.minTurnsBetween` | `3` | Minimum turns between auto-reports |
+| `report.autoOpen` | `true` | Open HTML report in browser |
+| `analyzer.prefer` | `"claude"` | Primary analyzer: `"claude"` or `"codex"` |
+| `analyzer.apiKey` | env `ANTHROPIC_API_KEY` | API key for direct Anthropic API calls |
+| `analyzer.enabled` | `true` | Enable AI analysis (falls back to static report) |
+
+## Report Preview
+
+Reports include:
+
+- **Overview** — Total lines added/removed, files changed, turn count
+- **AI Analysis** — Summary, intent, risks, highlights, intent match badge
+- **Turn Trend Chart** — Visual bar chart of changes per turn
+- **File Heatmap** — Most-changed files with change frequency bars
+- **Turn Timeline** — User prompt, AI response, commit detection, expandable diffs
+- **Diff Details** — Per-turn unified diff with syntax highlighting
+
+## Data Storage
+
+```
+~/.vibegps/
+├── vibegps.db              # SQLite database (WAL mode)
+├── config.json             # User configuration
+├── patches/                # Per-turn git diffs
+│   └── {session-id}/
+│       ├── turn-001.patch
+│       └── turn-002.patch
+└── reports/                # Generated HTML reports
+    └── {session-id}/
+        └── report-{timestamp}.html
+```
+
+## Architecture
+
+| Layer | Files | Responsibility |
+|-------|-------|---------------|
+| **CLI** | `src/cli/` | Command routing (`claude`, `codex`, `report`) |
+| **Wrapper** | `src/wrapper/` | Runtime, launcher, hook server, session tracker |
+| **Store** | `src/store/` | SQLite schema, queries, migrations |
+| **Analyzer** | `src/analyzer/` | LLM analysis with multi-fallback chain |
+| **Reporter** | `src/reporter/` | Orchestration, HTML template, terminal output |
+| **Utils** | `src/utils/` | Git snapshot, process management, browser open |
+
+## Development
+
+```bash
+# Install dependencies
+npm install
+
+# Build
+npm run build
+
+# Run tests (69 tests)
+npm test
+
+# Type check
+npm run lint
+
+# Development mode
+npm run dev claude
+```
+
+## License
+
+[MIT](LICENSE) © Bill Billion
