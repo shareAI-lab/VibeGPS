@@ -1,11 +1,12 @@
 ﻿import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { CODEX_DIRNAME, VIBEGPS_DIRNAME } from "../shared";
+import { CLAUDE_DIRNAME, CODEX_DIRNAME, VIBEGPS_DIRNAME } from "../shared";
 
 export interface WorkspacePaths {
   root: string;
   vibegpsDir: string;
   codexDir: string;
+  claudeDir: string;
   configFile: string;
   stateDbFile: string;
   checkpointsDir: string;
@@ -26,6 +27,7 @@ export function getWorkspacePaths(root: string): WorkspacePaths {
     root,
     vibegpsDir,
     codexDir: join(root, CODEX_DIRNAME),
+    claudeDir: join(root, CLAUDE_DIRNAME),
     configFile: join(vibegpsDir, "config.json"),
     stateDbFile: join(vibegpsDir, "state.db"),
     checkpointsDir: join(vibegpsDir, "checkpoints"),
@@ -45,6 +47,7 @@ export function ensureWorkspaceDirectories(paths: WorkspacePaths): void {
   const dirs = [
     paths.vibegpsDir,
     paths.codexDir,
+    paths.claudeDir,
     paths.checkpointsDir,
     paths.snapshotsContentDir,
     paths.deltasDir,

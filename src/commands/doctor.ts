@@ -6,11 +6,16 @@ import { DEFAULT_CONFIG, normalizeConfig, type VibegpsConfig } from "../shared";
 import { getWorkspaceRecordByRoot, getBranchTrack, getLatestCheckpoint, getLatestReport, openDatabase } from "../services/db";
 import { getGlobalIndexRoot } from "../services/global-index";
 import {
+  extractClaudeStopHookCommands,
+  validateClaudeManagedHook
+} from "../utils/claude-hooks";
+import {
   extractHooksConfigPath,
   extractStopHookCommands,
   getExpectedHooksConfigPath,
   getExpectedStopHookCommand,
   isCodexHooksEnabled,
+  MANAGED_HOOK_COMMAND,
   resolveHooksConfigPath,
   validateManagedStopHookCommand
 } from "../utils/codex-hooks";
@@ -59,6 +64,12 @@ export function registerDoctorCommand(program: Command): void {
         ok("codex", "codex executable is available");
       } else {
         warn("codex", "codex executable is not available in PATH");
+      }
+
+      if (checkCommand("claude", ["--version"])) {
+        ok("claude", "claude executable is available");
+      } else {
+        warn("claude", "claude executable is not available in PATH");
       }
 
       try {
@@ -147,6 +158,26 @@ export function registerDoctorCommand(program: Command): void {
         }
       } else {
         warn("codex hook", ".codex/config.toml is missing; run `vibegps init` to install the Stop hook");
+      }
+
+      const claudeSettingsPath = join(paths.claudeDir, "settings.json");
+      if (existsSync(claudeSettingsPath)) {
+        try {
+          const claudeSettings = readJson<unknown>(claudeSettingsPath);
+          const claudeStopCommands = extractClaudeStopHookCommands(claudeSettings);
+          const managedClaudeHook = claudeStopCommands.find((cmd) => validateClaudeManagedHook(cmd));
+
+          if (managedClaudeHook) {
+            ok("claude hook", `Stop hook is configured in .claude/settings.json -> ${managedClaudeHook}`);
+          } else {
+            warn("claude hook", `Stop hook is present but no managed VibeGPS command matches \`${MANAGED_HOOK_COMMAND}\``);
+          }
+        } catch {
+          fail("claude hook", "failed to parse .claude/settings.json");
+          hasFailure = true;
+        }
+      } else {
+        warn("claude hook", ".claude/settings.json is missing; run `vibegps init` to install the Stop hook");
       }
 
       if (existsSync(paths.projectDigestFile)) {

@@ -1,6 +1,7 @@
 ﻿import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, normalizeConfig, type VibegpsConfig } from "../shared";
+import { patchClaudeSettings } from "../utils/claude-hooks";
 import { patchCodexConfig, patchCodexHooksFile } from "../utils/codex-hooks";
 import { createId } from "../utils/ids";
 import { readJson, writeJson } from "../utils/json";
@@ -56,6 +57,7 @@ export function runInit(workspaceRoot: string, _cliEntrypoint: string): InitResu
 
   patchCodexConfig(paths);
   patchCodexHooksFile(paths);
+  patchClaudeSettings(paths);
 
   const existingInit = getLatestCheckpoint(db, branchTrack.branchTrackId);
   if (!existingInit) {
