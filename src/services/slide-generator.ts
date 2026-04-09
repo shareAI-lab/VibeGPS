@@ -44,6 +44,7 @@ export function buildSlidePrompt(context: AnalyzerContext, options: SlideGenerat
 - 实现全屏幻灯片体验（一次只展示一页，键盘左右方向键 + 鼠标点击翻页）
 - 每页幻灯片必须是文字与图形（SVG/CSS）的搭配组合，不允许纯文字页面
 - 总页面数在 ${options.minSlides} 到 ${options.maxSlides} 页之间
+- **严格视口适配**：每一页幻灯片的全部内容必须完整呈现在一屏之内（100vw × 100vh），不允许出现纵向滚动条。如果某页信息量较大，应精简内容或拆分到多页，而不是让内容溢出视口
 
 ## 幻灯片内容框架
 
@@ -86,7 +87,7 @@ export function buildSlidePrompt(context: AnalyzerContext, options: SlideGenerat
 
 - **动画**: CSS \`@keyframes\` + \`transition\`，可参考 animate.css 的命名风格（fadeIn、slideUp、zoomIn），也鼓励自定义动画。鼓励为 SVG 图形添加入场动效和页面过渡动效。
 - **图形**: 纯 SVG 和 CSS 绘制架构图、关系图、流程图、热力图等。
-- **排版**: CSS Grid / Flexbox 布局，大字号、高对比度、充足留白。
+- **排版**: CSS Grid / Flexbox 布局，大字号、高对比度、充足留白。每页 slide 容器建议设置 \`width: 100vw; height: 100vh; overflow: hidden;\`，内部使用 Flexbox/Grid 自适应分配空间，确保所有子元素都在视口范围内。文字内容宁可精炼也不要溢出。SVG 图形使用 \`viewBox\` 配合百分比宽高，使其自适应容器而非固定尺寸。
 - **配色**: 完全信任你的审美判断，但需保证可读性和对比度。
 - **翻页交互**: 内嵌轻量 JavaScript，支持键盘左右方向键和鼠标点击翻页，需要有当前页码指示器。不要使用 reveal.js 或其他外部框架。
 
