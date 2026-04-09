@@ -102,7 +102,20 @@ export async function callAnthropicApi(params: ApiCallParams): Promise<string> {
   });
 }
 
-async function callCodexExec(prompt: string, timeout: number): Promise<string> {
+export async function callClaudeCli(prompt: string, timeout: number): Promise<string> {
+  const result = await execa('claude', ['-p', prompt], {
+    timeout,
+    reject: false
+  });
+
+  if (result.failed || !result.stdout) {
+    throw new Error(`claude CLI 失败: ${result.stderr || 'no output'}`);
+  }
+
+  return result.stdout.trim();
+}
+
+export async function callCodexExec(prompt: string, timeout: number): Promise<string> {
   const result = await execa('codex', [
     'exec', '--json', '--sandbox', 'read-only', prompt
   ], { timeout, reject: false });
@@ -123,6 +136,28 @@ async function callCodexExec(prompt: string, timeout: number): Promise<string> {
   }
 }
 
+async function tryClaude(
+  config: AnalyzerConfig,
+  prompt: string,
+  apiCall: (params: ApiCallParams) => Promise<string>,
+  cliCall: (prompt: string, timeout: number) => Promise<string>
+): Promise<string> {
+  const apiKey = resolveApiKey(config);
+  if (apiKey) {
+    const model = config.model ?? DEFAULT_API_MODEL;
+    return await apiCall({
+      apiKey,
+      model,
+      prompt,
+      timeout: config.timeout,
+      apiUrl: ANTHROPIC_API_URL
+    });
+  }
+
+  process.stderr.write('[VibeGPS] 未配置 ANTHROPIC_API_KEY，使用 Claude CLI 分析\n');
+  return await cliCall(prompt, config.timeout);
+}
+
 export async function runAnalyzer(
   config: AnalyzerConfig,
   input: {
@@ -132,6 +167,7 @@ export async function runAnalyzer(
     diff: string;
   },
   apiCall: (params: ApiCallParams) => Promise<string> = callAnthropicApi,
+  claudeCliCall: (prompt: string, timeout: number) => Promise<string> = callClaudeCli,
   codexCall: (prompt: string, timeout: number) => Promise<string> = callCodexExec
 ): Promise<string | null> {
   if (!config.enabled) {
@@ -140,28 +176,26 @@ export async function runAnalyzer(
 
   const prompt = buildPrompt(input);
 
-  if (config.prefer === 'codex') {
+  // Build ordered analyzer list based on preference
+  const analyzers: Array<{ name: string; fn: () => Promise<string> }> =
+    config.prefer === 'codex'
+      ? [
+          { name: 'Codex', fn: () => codexCall(prompt, config.timeout) },
+          { name: 'Claude', fn: () => tryClaude(config, prompt, apiCall, claudeCliCall) }
+        ]
+      : [
+          { name: 'Claude', fn: () => tryClaude(config, prompt, apiCall, claudeCliCall) },
+          { name: 'Codex', fn: () => codexCall(prompt, config.timeout) }
+        ];
+
+  for (const { name, fn } of analyzers) {
     try {
-      return await codexCall(prompt, config.timeout);
+      return await fn();
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`[VibeGPS] Codex 分析失败: ${msg}\n`);
-      return null;
+      process.stderr.write(`[VibeGPS] ${name} 分析失败: ${msg}\n`);
     }
   }
 
-  const apiKey = resolveApiKey(config);
-  if (!apiKey) {
-    return null;
-  }
-
-  const model = config.model ?? DEFAULT_API_MODEL;
-
-  return await apiCall({
-    apiKey,
-    model,
-    prompt,
-    timeout: config.timeout,
-    apiUrl: ANTHROPIC_API_URL
-  });
+  return null;
 }

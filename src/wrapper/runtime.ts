@@ -156,7 +156,7 @@ export async function createRuntime(options?: {
     try {
       let report: { sessionId: string; output: string; compactOutput: string; reportPath: string };
       if (db) {
-        report = await orchestrateReportFromDb(db, sessionId, { reportsDir });
+        report = await orchestrateReportFromDb(db, sessionId, { reportsDir, vibegpsHome });
       } else {
         report = await orchestrateReportFromStore(sessionId, {
           vibegpsHome,

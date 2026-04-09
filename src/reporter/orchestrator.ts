@@ -245,6 +245,7 @@ export async function orchestrateReportFromDb(
   sessionId: string,
   options: {
     reportsDir: string;
+    vibegpsHome?: string;
     triggerType?: string;
   }
 ): Promise<{ sessionId: string; output: string; compactOutput: string; reportPath: string }> {
@@ -272,7 +273,8 @@ export async function orchestrateReportFromDb(
     return '';
   }).filter(Boolean).join('\n');
 
-  const config = await loadConfig(VIBEGPS_HOME);
+  const vibegpsHome = options?.vibegpsHome ?? VIBEGPS_HOME;
+  const config = await loadConfig(vibegpsHome);
   const lastAssistantMessage = latestTurn.lastAssistantMessage ?? '';
 
   // Convert DB turn records to session-store TurnRecord format for generateReport compatibility
