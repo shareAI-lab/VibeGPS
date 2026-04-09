@@ -53,10 +53,9 @@ export function normalizeConfig(input?: Partial<VibegpsConfig>): VibegpsConfig {
     report: {
       ...DEFAULT_CONFIG.report,
       ...input?.report,
-      slideGenerator: {
-        ...DEFAULT_CONFIG.report.slideGenerator,
-        ...input?.report?.slideGenerator
-      }
+      slideGenerator: input?.report?.slideGenerator
+        ? { ...DEFAULT_CONFIG.report.slideGenerator, ...input.report.slideGenerator }
+        : DEFAULT_CONFIG.report.slideGenerator
     },
     tracking: {
       ...DEFAULT_CONFIG.tracking,
