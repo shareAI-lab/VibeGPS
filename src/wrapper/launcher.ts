@@ -29,6 +29,7 @@ type HookServerFactory = (
 
 type RuntimeFactory = (options?: {
   db?: import('better-sqlite3');
+  agent?: 'claude' | 'codex';
   vibegpsHome?: string;
   reportsDir?: string;
   openReport?: (path: string) => Promise<void>;
@@ -252,7 +253,7 @@ export async function launchWrappedAgent(deps: {
   try { await cleanExpiredSessions(SESSIONS_DIR, 30); } catch { /* ignore */ }
 
   if (deps.agent === 'codex') {
-    const runtime = await createRuntimeFactory({ db });
+    const runtime = await createRuntimeFactory({ db, agent: 'codex' });
     const cwd = resolveAgentCwd(deps.userArgs);
     let nativeSessionRef: { sessionId: string; cwd: string } | null = null;
     let nativeStopCount = 0;
@@ -467,7 +468,7 @@ export async function launchWrappedAgent(deps: {
     }
   }
 
-  const runtime = await createRuntimeFactory();
+  const runtime = await createRuntimeFactory({ db, agent: 'claude' });
   let lastSessionRef: { sessionId: string; cwd: string } | null = null;
   let stopCount = 0;
   const onHookEvent = async (event: HookEvent): Promise<void> => {

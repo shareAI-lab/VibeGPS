@@ -59,6 +59,7 @@ function isReportRequested(prompt: string): boolean {
 
 export async function createRuntime(options?: {
   db?: Database.Database;
+  agent?: 'claude' | 'codex';
   vibegpsHome?: string;
   reportsDir?: string;
   openReport?: (path: string) => Promise<void>;
@@ -68,6 +69,7 @@ export async function createRuntime(options?: {
 }> {
   const vibegpsHome = options?.vibegpsHome ?? VIBEGPS_HOME;
   const db = options?.db;
+  const agent = options?.agent ?? 'claude';
   const reportsDir = options?.reportsDir ?? REPORTS_DIR;
   const openReport = options?.openReport ?? openInBrowser;
   const notify =
@@ -105,7 +107,7 @@ export async function createRuntime(options?: {
       dbCreateSession(db, {
         id: sessionId,
         cwd,
-        agent: 'claude',
+        agent,
         baselineHead: ''  // Will be set from tracker snapshot
       });
     }
