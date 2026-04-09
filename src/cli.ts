@@ -10,7 +10,7 @@ import { registerStatusCommand } from "./commands/status";
 
 export function buildCli(): Command {
   const program = new Command();
-  program.name("vibegps").description("Branch-aware evolution tracking for Codex vibecoding").version("0.1.0");
+  program.name("vibegps").description("Branch-aware evolution tracking for Codex & Claude Code vibecoding").version("0.1.0");
 
   registerInitCommand(program);
   registerDiffCommand(program);

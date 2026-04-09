@@ -37,7 +37,7 @@ function sanitizeTurnId(turnId: string): string {
 }
 
 function buildSystemMessage(reportPath: string): string {
-  return `[VibeGPS] Report ready: ${reportPath}\nOpen in browser: xdg-open ${JSON.stringify(reportPath)}`;
+  return `[VibeGPS] Report ready: ${reportPath}\n\nOpen in browser: xdg-open ${JSON.stringify(reportPath)}`;
 }
 
 export async function runStopHook(workspaceRoot: string): Promise<StopHookOutput> {
