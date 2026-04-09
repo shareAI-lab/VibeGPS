@@ -1,6 +1,12 @@
 import Database from 'better-sqlite3';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createSessionTracker } from '../../src/wrapper/session-tracker.js';
+
+function testPatchesDir(): string {
+  return join(tmpdir(), `vibegps-patches-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+}
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -9,8 +15,8 @@ function createTestDb(): Database.Database {
     CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, agent TEXT NOT NULL DEFAULT 'claude', started_at INTEGER NOT NULL, ended_at INTEGER, baseline_head TEXT NOT NULL);
     CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER, head_hash TEXT NOT NULL, timestamp INTEGER NOT NULL, total_added INTEGER DEFAULT 0, total_removed INTEGER DEFAULT 0, file_count INTEGER DEFAULT 0, diff_content TEXT);
     CREATE TABLE file_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER NOT NULL, file_path TEXT NOT NULL, operation TEXT NOT NULL, source TEXT NOT NULL, tool_name TEXT, lines_added INTEGER DEFAULT 0, lines_removed INTEGER DEFAULT 0, old_snippet TEXT, new_snippet TEXT, timestamp INTEGER NOT NULL);
-    CREATE TABLE turns (session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER NOT NULL, start_snapshot_id INTEGER REFERENCES snapshots(id), end_snapshot_id INTEGER REFERENCES snapshots(id), timestamp INTEGER NOT NULL, head_hash TEXT NOT NULL, commit_detected INTEGER DEFAULT 0, delta_added INTEGER DEFAULT 0, delta_removed INTEGER DEFAULT 0, last_assistant_message TEXT, operations_json TEXT, PRIMARY KEY (session_id, turn));
-    CREATE TABLE reports (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), generated_at INTEGER NOT NULL, html_path TEXT NOT NULL, trigger_type TEXT, totals_json TEXT, analysis_json TEXT);
+    CREATE TABLE turns (session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER NOT NULL, start_snapshot_id INTEGER REFERENCES snapshots(id), end_snapshot_id INTEGER REFERENCES snapshots(id), timestamp INTEGER NOT NULL, head_hash TEXT NOT NULL, commit_detected INTEGER DEFAULT 0, delta_added INTEGER DEFAULT 0, delta_removed INTEGER DEFAULT 0, last_assistant_message TEXT, operations_json TEXT, user_prompt TEXT, patch_path TEXT, PRIMARY KEY (session_id, turn));
+    CREATE TABLE reports (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), generated_at INTEGER NOT NULL, html_path TEXT NOT NULL, trigger_turn INTEGER, trigger_type TEXT, totals_json TEXT, analysis_json TEXT);
     CREATE TABLE agent_outputs (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER, agent TEXT NOT NULL, raw_output TEXT, parsed_json TEXT, created_at INTEGER NOT NULL);
   `);
   return db;
@@ -52,6 +58,7 @@ describe('session tracker', () => {
     const tracker = createSessionTracker({
       collectGitSnapshot,
       db,
+      patchesDir: testPatchesDir(),
       threshold: 200,
       minTurnsBetween: 3,
       onAutoReport: vi.fn()
@@ -104,6 +111,7 @@ describe('session tracker', () => {
     const tracker = createSessionTracker({
       collectGitSnapshot,
       db,
+      patchesDir: testPatchesDir(),
       threshold: 200,
       minTurnsBetween: 3,
       onAutoReport: vi.fn()
@@ -146,14 +154,14 @@ describe('session tracker', () => {
       })
       .mockResolvedValueOnce({
         headHash: 'abc',
-        cumulative: { added: 150, removed: 70 },
+        cumulative: { added: 160, removed: 70 },
         filesChanged: ['b.ts'],
         newFiles: [],
         diffContent: 'd2'
       })
       .mockResolvedValueOnce({
         headHash: 'abc',
-        cumulative: { added: 190, removed: 90 },
+        cumulative: { added: 210, removed: 90 },
         filesChanged: ['c.ts'],
         newFiles: [],
         diffContent: 'd3'
@@ -164,6 +172,7 @@ describe('session tracker', () => {
     const tracker = createSessionTracker({
       collectGitSnapshot,
       db,
+      patchesDir: testPatchesDir(),
       threshold: 200,
       minTurnsBetween: 2,
       onAutoReport
@@ -203,6 +212,7 @@ describe('session tracker', () => {
     const tracker = createSessionTracker({
       collectGitSnapshot,
       db,
+      patchesDir: testPatchesDir(),
       threshold: 200,
       minTurnsBetween: 3,
       onAutoReport
@@ -214,6 +224,45 @@ describe('session tracker', () => {
 
     expect(onAutoReport).toHaveBeenCalledTimes(1);
     expect(onAutoReport).toHaveBeenCalledWith('s4');
+    db.close();
+  });
+
+  it('triggers auto report when delta_added is negative but abs value reaches threshold', async () => {
+    const collectGitSnapshot = vi
+      .fn()
+      .mockResolvedValueOnce({
+        headHash: 'abc',
+        cumulative: { added: 1500, removed: 0 },
+        filesChanged: ['a.ts'],
+        newFiles: [],
+        diffContent: 'base'
+      })
+      .mockResolvedValueOnce({
+        headHash: 'abc',
+        cumulative: { added: 280, removed: 0 },
+        filesChanged: ['a.ts'],
+        newFiles: [],
+        diffContent: 'd1'
+      });
+
+    const db = createTestDb();
+    const onAutoReport = vi.fn().mockResolvedValue(undefined);
+    const tracker = createSessionTracker({
+      collectGitSnapshot,
+      db,
+      patchesDir: testPatchesDir(),
+      threshold: 200,
+      minTurnsBetween: 1,
+      onAutoReport
+    });
+
+    insertTestSession(db, 's5');
+    await tracker.onSessionStart({ session_id: 's5', cwd: '/tmp/app' });
+    const turn = await tracker.onStop({ session_id: 's5', cwd: '/tmp/app' });
+
+    expect(turn.delta.added).toBe(-1220);
+    expect(onAutoReport).toHaveBeenCalledTimes(1);
+    expect(onAutoReport).toHaveBeenCalledWith('s5');
     db.close();
   });
 });

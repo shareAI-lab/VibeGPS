@@ -6,6 +6,7 @@ describe('agent runner', () => {
     const apiCall = vi.fn().mockResolvedValue(
       '{"summary":"重构认证","intent":"职责分离","risks":[],"highlights":[]}'
     );
+    const claudeCliCall = vi.fn().mockRejectedValue(new Error('claude cli unavailable'));
 
     const raw = await runAnalyzer(
       { prefer: 'claude', timeout: 30000, enabled: true, apiKey: 'sk-test-123' },
@@ -15,7 +16,8 @@ describe('agent runner', () => {
         lastAssistantMessage: 'done',
         diff: 'diff text'
       },
-      apiCall
+      apiCall,
+      claudeCliCall
     );
 
     expect(apiCall).toHaveBeenCalledWith(
@@ -110,13 +112,15 @@ describe('agent runner', () => {
 
   it('uses ANTHROPIC_API_KEY env var when config has no apiKey', async () => {
     const apiCall = vi.fn().mockResolvedValue('{"summary":"ok"}');
+    const claudeCliCall = vi.fn().mockRejectedValue(new Error('cli unavailable'));
     const originalEnv = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = 'sk-env-key';
 
     await runAnalyzer(
       { prefer: 'claude', timeout: 30000, enabled: true },
       { stat: '+1', files: [], lastAssistantMessage: '', diff: '' },
-      apiCall
+      apiCall,
+      claudeCliCall
     );
 
     expect(apiCall).toHaveBeenCalledWith(
@@ -129,10 +133,12 @@ describe('agent runner', () => {
 
   it('uses configured model when specified', async () => {
     const apiCall = vi.fn().mockResolvedValue('{"summary":"ok"}');
+    const claudeCliCall = vi.fn().mockRejectedValue(new Error('cli unavailable'));
     await runAnalyzer(
       { prefer: 'claude', timeout: 30000, enabled: true, apiKey: 'sk-test', model: 'claude-haiku-4-20250414' },
       { stat: '+1', files: [], lastAssistantMessage: '', diff: '' },
-      apiCall
+      apiCall,
+      claudeCliCall
     );
 
     expect(apiCall).toHaveBeenCalledWith(
@@ -161,7 +167,7 @@ describe('agent runner', () => {
 
   it('falls back to Claude when codex fails with prefer=codex', async () => {
     const apiCall = vi.fn().mockResolvedValue('{"summary":"claude兜底"}');
-    const claudeCliCall = vi.fn();
+    const claudeCliCall = vi.fn().mockRejectedValue(new Error('claude cli unavailable'));
     const codexCall = vi.fn().mockRejectedValue(new Error('codex not found'));
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
@@ -177,6 +183,26 @@ describe('agent runner', () => {
     expect(apiCall).toHaveBeenCalled();
     expect(raw).toContain('claude兜底');
 
+    stderrSpy.mockRestore();
+  });
+
+  it('sanitizes analyzer error logs to avoid terminal corruption', async () => {
+    const apiCall = vi.fn().mockRejectedValue(new Error('api unavailable'));
+    const claudeCliCall = vi.fn().mockRejectedValue(new Error('cli\0failed'));
+    const codexCall = vi.fn().mockRejectedValue(new Error('codex\0failed'));
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const raw = await runAnalyzer(
+      { prefer: 'codex', timeout: 30000, enabled: true },
+      { stat: '+1', files: [], lastAssistantMessage: '', diff: '' },
+      apiCall,
+      claudeCliCall,
+      codexCall
+    );
+
+    expect(raw).toBeNull();
+    const logs = stderrSpy.mock.calls.map((call) => String(call[0]));
+    expect(logs.join('')).not.toContain('\0');
     stderrSpy.mockRestore();
   });
 });

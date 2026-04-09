@@ -21,7 +21,11 @@ vibegps report
 ## Reliability Notes
 
 - Hook 注入采用临时 settings 文件，进程退出后自动清理。
-- `vibegps codex` 优先使用 Codex 原生 hooks；若环境不支持或事件缺失，会自动降级到轮询兜底并继续按轮落盘。
+- `vibegps codex` 优先使用 Codex 原生 hooks（含 `PostToolUse`）；若环境不支持或事件缺失，会自动降级到轮询兜底并继续按轮落盘。
+- 同一轮会按 `session_id + turn_id` 做去重，避免 native Stop 与 fallback Stop 重复触发报告。
+- Codex 运行期默认降噪输出，减少对 TUI 回显的干扰。
+- Report 分析默认优先使用 Claude/Codex CLI，本地 CLI 不可用时才回退 API。
+- Diff 采集会跳过 `__pycache__` 与 `.pyc` 等二进制文件，避免分析链路被空字节污染。
 - LLM 分析失败时自动降级到静态报告。
 - 会话数据默认保留，可按保留天数做过期清理。
 - 会话收敛时支持两类触发：达到阈值自动出报告，或用户在对话中明确提出报告请求后于该轮结束出报告。

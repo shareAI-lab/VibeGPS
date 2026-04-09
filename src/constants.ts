@@ -4,6 +4,7 @@ import { join } from 'node:path';
 export const VIBEGPS_HOME = join(homedir(), '.vibegps');
 export const SESSIONS_DIR = join(VIBEGPS_HOME, 'sessions');
 export const REPORTS_DIR = join(VIBEGPS_HOME, 'reports');
+export const PATCHES_DIR = join(VIBEGPS_HOME, 'patches');
 export const TMP_HOOK_DIR = join(VIBEGPS_HOME, 'tmp', 'hooks');
 
 export const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';

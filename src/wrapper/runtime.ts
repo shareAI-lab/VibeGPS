@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { REPORTS_DIR, VIBEGPS_HOME } from '../constants.js';
+import { PATCHES_DIR, REPORTS_DIR, VIBEGPS_HOME } from '../constants.js';
 import { loadConfig } from '../store/config.js';
 import {
   createSession as dbCreateSession,
@@ -15,6 +15,7 @@ interface HookEvent {
   event: 'SessionStart' | 'Stop' | 'UserPromptSubmit' | 'PostToolUse';
   payload: Record<string, unknown>;
 }
+type NotifyMode = 'verbose' | 'quiet';
 
 const REPORT_KEYWORDS = [
   /\breport\b/i,
@@ -61,15 +62,19 @@ export async function createRuntime(options?: {
   db?: Database.Database;
   agent?: 'claude' | 'codex';
   vibegpsHome?: string;
+  patchesDir?: string;
   reportsDir?: string;
   openReport?: (path: string) => Promise<void>;
   notify?: (message: string) => void;
+  notifyMode?: NotifyMode;
+  onReportGenerated?: (reportPath: string) => void;
 }): Promise<{
-  handleHook: (event: HookEvent) => Promise<void>;
+  handleHook: (event: HookEvent) => Promise<{ systemMessage?: string } | void>;
 }> {
   const vibegpsHome = options?.vibegpsHome ?? VIBEGPS_HOME;
   const db = options?.db;
   const agent = options?.agent ?? 'claude';
+  const patchesDir = options?.patchesDir ?? PATCHES_DIR;
   const reportsDir = options?.reportsDir ?? REPORTS_DIR;
   const openReport = options?.openReport ?? openInBrowser;
   const notify =
@@ -77,15 +82,22 @@ export async function createRuntime(options?: {
     ((message: string) => {
       process.stderr.write(`${message}\n`);
     });
+  const notifyMode = options?.notifyMode ?? 'verbose';
+  const onReportGenerated = options?.onReportGenerated;
   const config = await loadConfig(vibegpsHome);
   const fileChangeCollector = createFileChangeCollector();
 
   const pendingAutoReports = new Set<string>();
+  const pendingPromptBySession = new Map<string, string>();
   const pendingForcedReports = new Set<string>();
-  const stopPendingSessions = new Set<string>();
+  // 设计意图：以 session + turn 做幂等收敛，避免 native/fallback stop 重复结算同一轮。
+  const pendingTurnBySession = new Map<string, string>();
+  const finalizedTurns = new Set<string>();
+  const syntheticTurnCounter = new Map<string, number>();
   const tracker = createSessionTracker({
     collectGitSnapshot,
     db: db!,
+    patchesDir,
     threshold: config.report.threshold,
     minTurnsBetween: config.report.minTurnsBetween,
     onAutoReport: async (sessionId: string) => {
@@ -93,6 +105,37 @@ export async function createRuntime(options?: {
     },
     drainOperations: (sessionId: string) => fileChangeCollector.drainOperations(sessionId)
   });
+
+  function readTurnId(payload: Record<string, unknown>): string | null {
+    const turnId = payload.turn_id;
+    if (typeof turnId !== 'string' || turnId.length === 0) {
+      return null;
+    }
+    return turnId;
+  }
+
+  function turnKey(sessionId: string, turnId: string): string {
+    return `${sessionId}:${turnId}`;
+  }
+
+  function nextSyntheticTurnId(sessionId: string): string {
+    const current = syntheticTurnCounter.get(sessionId) ?? 0;
+    const next = current + 1;
+    syntheticTurnCounter.set(sessionId, next);
+    return `synthetic-${next}`;
+  }
+
+  function resolveStopTurnId(sessionId: string, payload: Record<string, unknown>): string {
+    const payloadTurnId = readTurnId(payload);
+    if (payloadTurnId) {
+      return payloadTurnId;
+    }
+    const pendingTurnId = pendingTurnBySession.get(sessionId);
+    if (pendingTurnId) {
+      return pendingTurnId;
+    }
+    return nextSyntheticTurnId(sessionId);
+  }
 
   async function handleSessionStart(payload: Record<string, unknown>): Promise<void> {
     const sessionId = requireString(payload, 'session_id');
@@ -126,9 +169,20 @@ export async function createRuntime(options?: {
   async function handleStop(payload: Record<string, unknown>): Promise<void> {
     const sessionId = requireString(payload, 'session_id');
     const cwd = requireString(payload, 'cwd');
+    const stopTurnId = resolveStopTurnId(sessionId, payload);
+    const key = turnKey(sessionId, stopTurnId);
+
+    if (finalizedTurns.has(key)) {
+      return;
+    }
 
     if (db && !dbSessionExists(db, sessionId)) {
       await handleSessionStart(payload);
+    }
+
+    const userPrompt = pendingPromptBySession.get(sessionId) ?? '';
+    if (pendingPromptBySession.has(sessionId)) {
+      pendingPromptBySession.delete(sessionId);
     }
 
     const turn = await tracker.onStop({
@@ -137,9 +191,13 @@ export async function createRuntime(options?: {
       last_assistant_message:
         typeof payload.last_assistant_message === 'string'
           ? payload.last_assistant_message
-          : ''
+          : '',
+      user_prompt: userPrompt
     });
-    stopPendingSessions.delete(sessionId);
+    finalizedTurns.add(key);
+    if (pendingTurnBySession.get(sessionId) === stopTurnId) {
+      pendingTurnBySession.delete(sessionId);
+    }
 
     // Data is already written to DB inside tracker.onStop
     // No need to call appendTurn anymore
@@ -155,18 +213,30 @@ export async function createRuntime(options?: {
 
     try {
       let report: { sessionId: string; output: string; compactOutput: string; reportPath: string };
+      const triggerType = [shouldAutoReport ? 'threshold' : '', shouldForceReport ? 'manual' : '']
+        .filter(Boolean)
+        .join('+');
       if (db) {
-        report = await orchestrateReportFromDb(db, sessionId, { reportsDir, vibegpsHome });
+        report = await orchestrateReportFromDb(db, sessionId, {
+          reportsDir,
+          vibegpsHome,
+          triggerType,
+          triggerTurn: turn.turn
+        });
       } else {
         report = await orchestrateReportFromStore(sessionId, {
           vibegpsHome,
           reportsDir
         });
       }
-      notify(report.compactOutput);
-      if (shouldForceReport) {
-        notify('[VibeGPS] 已按用户请求生成报告');
+      if (notifyMode !== 'quiet') {
+        notify(report.compactOutput);
+        if (shouldForceReport) {
+          notify('[VibeGPS] 已按用户请求生成报告');
+        }
       }
+
+      onReportGenerated?.(report.reportPath);
 
       if (config.report.autoOpen) {
         try {
@@ -186,38 +256,61 @@ export async function createRuntime(options?: {
   async function handleUserPromptSubmit(payload: Record<string, unknown>): Promise<void> {
     const sessionId = requireString(payload, 'session_id');
     const cwd = requireString(payload, 'cwd');
+    const currentTurnId = readTurnId(payload) ?? nextSyntheticTurnId(sessionId);
 
     if (db && !dbSessionExists(db, sessionId)) {
       await handleSessionStart(payload);
     }
 
-    if (stopPendingSessions.has(sessionId)) {
+    const pendingTurnId = pendingTurnBySession.get(sessionId);
+    if (pendingTurnId && pendingTurnId !== currentTurnId) {
       await handleStop({
         session_id: sessionId,
         cwd,
+        turn_id: pendingTurnId,
         last_assistant_message: ''
       });
-      notify('[VibeGPS] 检测到缺失 Stop Hook，已在新一轮对话前自动补齐');
+      if (notifyMode !== 'quiet') {
+        notify('[VibeGPS] 检测到缺失 Stop Hook，已在新一轮对话前自动补齐');
+      }
     }
 
     const promptText = extractPromptText(payload);
+    pendingPromptBySession.set(sessionId, promptText);
+
     if (isReportRequested(promptText)) {
       pendingForcedReports.add(sessionId);
-      notify('[VibeGPS] 检测到用户请求报告，将在本轮结束后生成');
+      if (notifyMode !== 'quiet') {
+        notify('[VibeGPS] 检测到用户请求报告，将在本轮结束后生成');
+      }
     }
 
-    stopPendingSessions.add(sessionId);
+    pendingTurnBySession.set(sessionId, currentTurnId);
   }
 
   return {
-    handleHook: async (event: HookEvent): Promise<void> => {
+    handleHook: async (event: HookEvent): Promise<{ systemMessage?: string } | void> => {
       if (event.event === 'SessionStart') {
         await handleSessionStart(event.payload);
         return;
       }
 
       if (event.event === 'Stop') {
+        const sessionId =
+          typeof event.payload.session_id === 'string' ? event.payload.session_id : '';
+        const beforeAuto = sessionId ? pendingAutoReports.has(sessionId) : false;
+        const beforeForced = sessionId ? pendingForcedReports.has(sessionId) : false;
         await handleStop(event.payload);
+        if (notifyMode === 'quiet' && sessionId && (beforeAuto || beforeForced)) {
+          const latest = db
+            ?.prepare('SELECT html_path FROM reports WHERE session_id = ? ORDER BY generated_at DESC LIMIT 1')
+            .get(sessionId) as { html_path?: string } | undefined;
+          if (latest?.html_path) {
+            return {
+              systemMessage: `[VibeGPS] 报告已生成: ${latest.html_path}`
+            };
+          }
+        }
         return;
       }
 

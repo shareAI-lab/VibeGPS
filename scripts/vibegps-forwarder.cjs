@@ -27,7 +27,7 @@ async function main() {
 
   const body = JSON.stringify({ event, payload });
 
-  await new Promise((resolve, reject) => {
+  const responseBody = await new Promise((resolve, reject) => {
     const req = http.request(
       {
         hostname: '127.0.0.1',
@@ -40,8 +40,12 @@ async function main() {
         }
       },
       (res) => {
+        let raw = '';
+        res.on('data', (chunk) => {
+          raw += chunk.toString();
+        });
         res.resume();
-        res.on('end', resolve);
+        res.on('end', () => resolve(raw));
       }
     );
 
@@ -49,6 +53,28 @@ async function main() {
     req.write(body);
     req.end();
   });
+
+  // Codex Stop hook 仅接受 JSON 输出；通过 systemMessage 在对话流内安全回显。
+  if (event === 'Stop') {
+    let systemMessage = null;
+    try {
+      const parsed = JSON.parse(responseBody || '{}');
+      if (parsed && typeof parsed.systemMessage === 'string' && parsed.systemMessage.trim()) {
+        systemMessage = parsed.systemMessage.trim();
+      }
+    } catch {
+      // ignore malformed body
+    }
+
+    if (systemMessage) {
+      process.stdout.write(
+        JSON.stringify({
+          continue: true,
+          systemMessage
+        })
+      );
+    }
+  }
 }
 
 main().catch((error) => {

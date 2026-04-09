@@ -14,8 +14,8 @@ function createTestDb(): Database.Database {
     CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, agent TEXT NOT NULL DEFAULT 'claude', started_at INTEGER NOT NULL, ended_at INTEGER, baseline_head TEXT NOT NULL);
     CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER, head_hash TEXT NOT NULL, timestamp INTEGER NOT NULL, total_added INTEGER DEFAULT 0, total_removed INTEGER DEFAULT 0, file_count INTEGER DEFAULT 0, diff_content TEXT);
     CREATE TABLE file_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER NOT NULL, file_path TEXT NOT NULL, operation TEXT NOT NULL, source TEXT NOT NULL, tool_name TEXT, lines_added INTEGER DEFAULT 0, lines_removed INTEGER DEFAULT 0, old_snippet TEXT, new_snippet TEXT, timestamp INTEGER NOT NULL);
-    CREATE TABLE turns (session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER NOT NULL, start_snapshot_id INTEGER REFERENCES snapshots(id), end_snapshot_id INTEGER REFERENCES snapshots(id), timestamp INTEGER NOT NULL, head_hash TEXT NOT NULL, commit_detected INTEGER DEFAULT 0, delta_added INTEGER DEFAULT 0, delta_removed INTEGER DEFAULT 0, last_assistant_message TEXT, operations_json TEXT, PRIMARY KEY (session_id, turn));
-    CREATE TABLE reports (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), generated_at INTEGER NOT NULL, html_path TEXT NOT NULL, trigger_type TEXT, totals_json TEXT, analysis_json TEXT);
+    CREATE TABLE turns (session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER NOT NULL, start_snapshot_id INTEGER REFERENCES snapshots(id), end_snapshot_id INTEGER REFERENCES snapshots(id), timestamp INTEGER NOT NULL, head_hash TEXT NOT NULL, commit_detected INTEGER DEFAULT 0, delta_added INTEGER DEFAULT 0, delta_removed INTEGER DEFAULT 0, last_assistant_message TEXT, operations_json TEXT, user_prompt TEXT, patch_path TEXT, PRIMARY KEY (session_id, turn));
+    CREATE TABLE reports (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), generated_at INTEGER NOT NULL, html_path TEXT NOT NULL, trigger_turn INTEGER, trigger_type TEXT, totals_json TEXT, analysis_json TEXT);
     CREATE TABLE agent_outputs (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), turn INTEGER, agent TEXT NOT NULL, raw_output TEXT, parsed_json TEXT, created_at INTEGER NOT NULL);
   `);
   return db;
@@ -376,6 +376,102 @@ describe('runtime hook handling', () => {
     expect(turns[0].deltaAdded).toBeGreaterThan(0);
     expect(turns[1].deltaAdded).toBeGreaterThan(0);
     expect(messages.join('\n')).toContain('检测到缺失 Stop Hook');
+    db.close();
+  });
+
+  it('deduplicates duplicate stop events for the same turn', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'vibegps-runtime-'));
+    paths.push(base);
+
+    const repo = join(base, 'repo');
+    const home = join(base, '.vibegps');
+    const reports = join(home, 'reports');
+
+    await execa('mkdir', ['-p', repo]);
+    await execa('git', ['init'], { cwd: repo });
+    await writeFile(join(repo, 'app.ts'), 'console.log("init");\n', 'utf8');
+    await execa('git', ['add', '.'], { cwd: repo });
+    await execa('git', ['commit', '-m', 'init'], {
+      cwd: repo,
+      env: {
+        GIT_AUTHOR_NAME: 'Bill Billion',
+        GIT_AUTHOR_EMAIL: 'bill@example.com',
+        GIT_COMMITTER_NAME: 'Bill Billion',
+        GIT_COMMITTER_EMAIL: 'bill@example.com'
+      }
+    });
+
+    await mkdir(home, { recursive: true });
+    await writeFile(
+      join(home, 'config.json'),
+      JSON.stringify({
+        report: {
+          threshold: 1,
+          minTurnsBetween: 1,
+          autoOpen: false
+        },
+        analyzer: {
+          prefer: 'claude',
+          timeout: 30000,
+          enabled: false
+        }
+      }),
+      'utf8'
+    );
+
+    const db = createTestDb();
+    const runtime = await createRuntime({
+      db,
+      vibegpsHome: home,
+      reportsDir: reports
+    });
+
+    await runtime.handleHook({
+      event: 'SessionStart',
+      payload: {
+        session_id: 's6',
+        cwd: repo
+      }
+    });
+
+    await runtime.handleHook({
+      event: 'UserPromptSubmit',
+      payload: {
+        session_id: 's6',
+        cwd: repo,
+        turn_id: 'turn-1',
+        prompt: '请处理'
+      }
+    });
+
+    await writeFile(join(repo, 'app.ts'), 'console.log("init");\nconsole.log("next");\n', 'utf8');
+
+    await runtime.handleHook({
+      event: 'Stop',
+      payload: {
+        session_id: 's6',
+        cwd: repo,
+        turn_id: 'turn-1',
+        last_assistant_message: 'done'
+      }
+    });
+
+    await runtime.handleHook({
+      event: 'Stop',
+      payload: {
+        session_id: 's6',
+        cwd: repo,
+        turn_id: 'turn-1',
+        last_assistant_message: 'done again'
+      }
+    });
+
+    const turns = getTurns(db, 's6');
+    expect(turns.length).toBe(1);
+    const reportCountRow = db
+      .prepare('SELECT COUNT(1) as c FROM reports WHERE session_id = ?')
+      .get('s6') as { c: number };
+    expect(reportCountRow.c).toBe(1);
     db.close();
   });
 });

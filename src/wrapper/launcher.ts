@@ -22,28 +22,30 @@ type SpawnFn = (
 
 type HookServerFactory = (
   onEvent: (event: {
-    event: 'SessionStart' | 'Stop' | 'UserPromptSubmit';
+    event: 'SessionStart' | 'Stop' | 'UserPromptSubmit' | 'PostToolUse';
     payload: Record<string, unknown>;
-  }) => Promise<void>
+  }) => Promise<{ systemMessage?: string } | void>
 ) => Promise<{ port: number; close: () => Promise<void> }>;
 
 type RuntimeFactory = (options?: {
-  db?: import('better-sqlite3');
+  db?: import('better-sqlite3').Database;
   agent?: 'claude' | 'codex';
   vibegpsHome?: string;
   reportsDir?: string;
   openReport?: (path: string) => Promise<void>;
   notify?: (message: string) => void;
+  notifyMode?: 'verbose' | 'quiet';
+  onReportGenerated?: (reportPath: string) => void;
 }) => Promise<{
   handleHook: (event: {
-    event: 'SessionStart' | 'Stop' | 'UserPromptSubmit';
+    event: 'SessionStart' | 'Stop' | 'UserPromptSubmit' | 'PostToolUse';
     payload: Record<string, unknown>;
-  }) => Promise<void>;
+  }) => Promise<{ systemMessage?: string } | void>;
 }>;
 
 type MountedNotifier = (message: string) => void;
 type HookEvent = {
-  event: 'SessionStart' | 'Stop' | 'UserPromptSubmit';
+  event: 'SessionStart' | 'Stop' | 'UserPromptSubmit' | 'PostToolUse';
   payload: Record<string, unknown>;
 };
 
@@ -71,6 +73,7 @@ function isSameCumulative(
 function extractSessionRef(payload: Record<string, unknown>): {
   sessionId: string;
   cwd: string;
+  turnId: string | null;
 } | null {
   const sessionId = payload.session_id;
   const cwd = payload.cwd;
@@ -80,7 +83,9 @@ function extractSessionRef(payload: Record<string, unknown>): {
   if (typeof cwd !== 'string' || cwd.length === 0) {
     return null;
   }
-  return { sessionId, cwd };
+  const turnId =
+    typeof payload.turn_id === 'string' && payload.turn_id.length > 0 ? payload.turn_id : null;
+  return { sessionId, cwd, turnId };
 }
 
 async function waitMs(ms: number): Promise<void> {
@@ -253,13 +258,20 @@ export async function launchWrappedAgent(deps: {
   try { await cleanExpiredSessions(SESSIONS_DIR, 30); } catch { /* ignore */ }
 
   if (deps.agent === 'codex') {
-    const runtime = await createRuntimeFactory({ db, agent: 'codex' });
+    const runtime = await createRuntimeFactory({
+      db,
+      agent: 'codex',
+      notifyMode: 'quiet',
+      onReportGenerated: (reportPath: string) => {
+        notifyMounted(`[VibeGPS] 报告已生成: ${reportPath}`);
+      }
+    });
     const cwd = resolveAgentCwd(deps.userArgs);
-    let nativeSessionRef: { sessionId: string; cwd: string } | null = null;
+    let nativeSessionRef: { sessionId: string; cwd: string; turnId: string | null } | null = null;
     let nativeStopCount = 0;
     let nativeEventSeen = false;
 
-    const onHookEvent = async (event: HookEvent): Promise<void> => {
+    const onHookEvent = async (event: HookEvent): Promise<{ systemMessage?: string } | void> => {
       nativeEventSeen = true;
       const ref = extractSessionRef(event.payload);
       if (ref) {
@@ -268,7 +280,7 @@ export async function launchWrappedAgent(deps: {
       if (event.event === 'Stop') {
         nativeStopCount += 1;
       }
-      await runtime.handleHook(event);
+      return runtime.handleHook(event);
     };
     const hookServer = await createHookServer(onHookEvent);
 
@@ -287,7 +299,7 @@ export async function launchWrappedAgent(deps: {
       nativeHooksEnabled = false;
     }
 
-    notifyMounted(`[VibeGPS] 🛰️ 导航已启动 | 报告阈值: ${reportThreshold} 行 | 手动: vibegps report`);
+    notifyMounted(`[VibeGPS] 导航已启动 | 报告阈值: ${reportThreshold} 行 | 手动: vibegps report`);
     if (nativeHooksEnabled) {
       notifyMounted('[VibeGPS] Codex 原生 hooks 已启用');
     } else {
@@ -380,6 +392,7 @@ export async function launchWrappedAgent(deps: {
         payload: {
           session_id: sessionRef.sessionId,
           cwd: sessionRef.cwd,
+          turn_id: nativeSessionRef?.turnId ?? undefined,
           last_assistant_message: ''
         }
       });
@@ -468,10 +481,10 @@ export async function launchWrappedAgent(deps: {
     }
   }
 
-  const runtime = await createRuntimeFactory({ db, agent: 'claude' });
-  let lastSessionRef: { sessionId: string; cwd: string } | null = null;
+  const runtime = await createRuntimeFactory({ db, agent: 'claude', notifyMode: 'verbose' });
+  let lastSessionRef: { sessionId: string; cwd: string; turnId: string | null } | null = null;
   let stopCount = 0;
-  const onHookEvent = async (event: HookEvent): Promise<void> => {
+  const onHookEvent = async (event: HookEvent): Promise<{ systemMessage?: string } | void> => {
     const ref = extractSessionRef(event.payload);
     if (ref) {
       lastSessionRef = ref;
@@ -479,11 +492,11 @@ export async function launchWrappedAgent(deps: {
     if (event.event === 'Stop') {
       stopCount += 1;
     }
-    await runtime.handleHook(event);
+    return runtime.handleHook(event);
   };
   const hookServer = await createHookServer(onHookEvent);
   const settingsPath = await createTempSettings(hookServer.port);
-  notifyMounted(`[VibeGPS] 🛰️ 导航已启动 | 报告阈值: ${reportThreshold} 行 | 手动: vibegps report`);
+  notifyMounted(`[VibeGPS] 导航已启动 | 报告阈值: ${reportThreshold} 行 | 手动: vibegps report`);
 
   const ensureStopHook = async (force: boolean): Promise<void> => {
     if (!force && stopCount === 0) {
@@ -499,6 +512,7 @@ export async function launchWrappedAgent(deps: {
       payload: {
         session_id: lastSessionRef.sessionId,
         cwd: lastSessionRef.cwd,
+        turn_id: lastSessionRef.turnId ?? undefined,
         last_assistant_message: ''
       }
     });

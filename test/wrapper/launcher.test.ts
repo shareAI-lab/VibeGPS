@@ -54,7 +54,7 @@ describe('launcher', () => {
     ]);
     expect(result.exitCode).toBe(0);
     expect(notifyMounted).toHaveBeenCalledWith(
-      expect.stringContaining('[VibeGPS] 🛰️ 导航已启动')
+      expect.stringContaining('[VibeGPS] 导航已启动')
     );
     expect(notifyMounted).toHaveBeenCalledWith(
       expect.stringContaining('报告阈值: 200')
@@ -120,6 +120,7 @@ describe('launcher', () => {
     const merged = JSON.parse(await readFile(hooksPath, 'utf8'));
     expect(merged.hooks.SessionStart).toHaveLength(2);
     expect(merged.hooks.Stop[0].hooks[0].command).toContain('9042 Stop');
+    expect(merged.hooks.PostToolUse[0].hooks[0].command).toContain('9042 PostToolUse');
 
     await prepared.cleanup();
     const restored = await readFile(hooksPath, 'utf8');
@@ -169,7 +170,7 @@ describe('launcher', () => {
       event: 'Stop'
     });
     expect(notifyMounted).toHaveBeenCalledWith(
-      expect.stringContaining('[VibeGPS] 🛰️ 导航已启动')
+      expect.stringContaining('[VibeGPS] 导航已启动')
     );
   });
 
@@ -226,7 +227,7 @@ describe('launcher', () => {
     let onEvent:
       | ((
           event: {
-            event: 'SessionStart' | 'Stop' | 'UserPromptSubmit';
+            event: 'SessionStart' | 'Stop' | 'UserPromptSubmit' | 'PostToolUse';
             payload: Record<string, unknown>;
           }
         ) => Promise<void>)
@@ -294,7 +295,7 @@ describe('launcher', () => {
     let onEvent:
       | ((
           event: {
-            event: 'SessionStart' | 'Stop' | 'UserPromptSubmit';
+            event: 'SessionStart' | 'Stop' | 'UserPromptSubmit' | 'PostToolUse';
             payload: Record<string, unknown>;
           }
         ) => Promise<void>)

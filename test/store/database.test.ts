@@ -49,11 +49,11 @@ function createTestDb(): Database.Database {
       timestamp INTEGER NOT NULL, head_hash TEXT NOT NULL,
       commit_detected INTEGER DEFAULT 0, delta_added INTEGER DEFAULT 0,
       delta_removed INTEGER DEFAULT 0, last_assistant_message TEXT,
-      operations_json TEXT, PRIMARY KEY (session_id, turn)
+      operations_json TEXT, user_prompt TEXT, patch_path TEXT, PRIMARY KEY (session_id, turn)
     );
     CREATE TABLE reports (
       id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id),
-      generated_at INTEGER NOT NULL, html_path TEXT NOT NULL, trigger_type TEXT,
+      generated_at INTEGER NOT NULL, html_path TEXT NOT NULL, trigger_turn INTEGER, trigger_type TEXT,
       totals_json TEXT, analysis_json TEXT
     );
     CREATE TABLE agent_outputs (
@@ -92,7 +92,7 @@ describe('database module', () => {
     const db = openDatabase(dbPath);
 
     const version = db.pragma('user_version', { simple: true });
-    expect(version).toBe(1);
+    expect(version).toBe(3);
 
     db.close();
     await rm(dir, { recursive: true, force: true });
@@ -173,7 +173,9 @@ describe('snapshot-store CRUD', () => {
       sessionId: 's1', turn: 1, startSnapshotId: snap1, endSnapshotId: snap2,
       timestamp: Date.now(), headHash: 'h2', commitDetected: false,
       deltaAdded: 30, deltaRemoved: 5, lastAssistantMessage: 'done',
-      operationsJson: null
+      operationsJson: null,
+      userPrompt: null,
+      patchPath: null
     };
     insertTurn(db, turn);
 
@@ -194,8 +196,8 @@ describe('snapshot-store CRUD', () => {
     const snap2 = insertSnapshot(db, { sessionId: 's1', turn: 1, headHash: 'h1', totalAdded: 30, totalRemoved: 5, fileCount: 2 });
     const snap3 = insertSnapshot(db, { sessionId: 's1', turn: 2, headHash: 'h1', totalAdded: 50, totalRemoved: 15, fileCount: 3 });
 
-    insertTurn(db, { sessionId: 's1', turn: 1, startSnapshotId: snap1, endSnapshotId: snap2, timestamp: Date.now(), headHash: 'h1', commitDetected: false, deltaAdded: 30, deltaRemoved: 5, lastAssistantMessage: null, operationsJson: null });
-    insertTurn(db, { sessionId: 's1', turn: 2, startSnapshotId: snap2, endSnapshotId: snap3, timestamp: Date.now(), headHash: 'h1', commitDetected: false, deltaAdded: 20, deltaRemoved: 10, lastAssistantMessage: null, operationsJson: null });
+    insertTurn(db, { sessionId: 's1', turn: 1, startSnapshotId: snap1, endSnapshotId: snap2, timestamp: Date.now(), headHash: 'h1', commitDetected: false, deltaAdded: 30, deltaRemoved: 5, lastAssistantMessage: null, operationsJson: null, userPrompt: null, patchPath: null });
+    insertTurn(db, { sessionId: 's1', turn: 2, startSnapshotId: snap2, endSnapshotId: snap3, timestamp: Date.now(), headHash: 'h1', commitDetected: false, deltaAdded: 20, deltaRemoved: 10, lastAssistantMessage: null, operationsJson: null, userPrompt: null, patchPath: null });
 
     const delta = getSessionTotalDelta(db, 's1');
     expect(delta.added).toBe(50);
@@ -210,6 +212,7 @@ describe('snapshot-store CRUD', () => {
 
     insertReport(db, {
       sessionId: 's1', generatedAt: Date.now(), htmlPath: '/tmp/report.html',
+      triggerTurn: 1,
       triggerType: 'auto', totalsJson: '{"added":50}', analysisJson: '{"summary":"ok"}'
     });
 

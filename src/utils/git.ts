@@ -14,17 +14,28 @@ export interface GitSnapshot {
 }
 
 const TRANSIENT_EXCLUDED_FILES = new Set(['.codex/hooks.json']);
+const TRANSIENT_EXCLUDED_GLOBS = ['**/__pycache__/**', '**/*.pyc'];
 
 function normalizeGitPath(file: string): string {
   return file.replaceAll('\\', '/').replace(/^\.\/+/, '');
 }
 
 function shouldExcludeFile(file: string): boolean {
-  return TRANSIENT_EXCLUDED_FILES.has(normalizeGitPath(file));
+  const normalized = normalizeGitPath(file);
+  if (TRANSIENT_EXCLUDED_FILES.has(normalized)) {
+    return true;
+  }
+  if (normalized.includes('/__pycache__/') || normalized.endsWith('.pyc')) {
+    return true;
+  }
+  return false;
 }
 
 function withExcludePathspec(args: string[]): string[] {
-  const excludes = [...TRANSIENT_EXCLUDED_FILES].map((file) => `:(exclude)${file}`);
+  const excludes = [
+    ...[...TRANSIENT_EXCLUDED_FILES].map((file) => `:(exclude)${file}`),
+    ...TRANSIENT_EXCLUDED_GLOBS.map((pattern) => `:(exclude,glob)${pattern}`)
+  ];
   return [...args, '--', '.', ...excludes];
 }
 
@@ -84,6 +95,10 @@ function buildNewFileDiff(file: string, raw: string): string {
   ].join('\n');
 }
 
+function isBinaryBuffer(buffer: Buffer): boolean {
+  return buffer.includes(0);
+}
+
 async function collectUntrackedStats(cwd: string, newFiles: string[]): Promise<{
   added: number;
   diffContent: string;
@@ -93,10 +108,14 @@ async function collectUntrackedStats(cwd: string, newFiles: string[]): Promise<{
 
   for (const file of newFiles) {
     try {
-      const raw = await readFile(join(cwd, file), 'utf8');
-      const lines = splitContentLines(raw);
+      const raw = await readFile(join(cwd, file));
+      if (isBinaryBuffer(raw)) {
+        continue;
+      }
+      const text = raw.toString('utf8');
+      const lines = splitContentLines(text);
       added += lines.length;
-      diffChunks.push(buildNewFileDiff(file, raw));
+      diffChunks.push(buildNewFileDiff(file, text));
     } catch {
       // 非文本文件或读取失败时跳过行数统计，不阻断主流程。
     }

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.5 - 2026-04-09
+
+- 修复 Report 分析失败的根因：过滤 `__pycache__` 与 `.pyc` 二进制文件，避免 Diff 中混入 `\\0` 导致 CLI 参数报错。
+- 调整分析器优先级：默认先调用 Claude/Codex CLI，自有 CLI 失败时才回退 Anthropic API（若已配置密钥）。
+- 对分析失败日志做终端安全清洗，避免二进制/控制字符污染 Codex TUI 回显。
+
+## 0.1.4 - 2026-04-09
+
+- 修复 Codex hooks 注入键：`PostToolUse` 按原生配置写入，不再使用 `AfterToolUse`。
+- 增加按 `session_id + turn_id` 的回合幂等去重，避免同一轮被 native Stop 与 fallback Stop 重复结算、重复生成报告。
+- 报告落库增加 `trigger_turn` 并建立唯一索引，防止同一轮重复插入报告记录。
+- Codex wrapper 默认使用 quiet 通知模式，减少运行期 stderr 输出，改善 TUI 回显干扰。
+- 保持 Claude 路径行为不变，并补充对应回归测试与重复 Stop 去重测试。
+
 ## 0.1.3 - 2026-04-09
 
 - Codex wrapper 优先启用原生 hooks：会话启动时临时写入 `<repo>/.codex/hooks.json`，会话结束后自动恢复原始文件。

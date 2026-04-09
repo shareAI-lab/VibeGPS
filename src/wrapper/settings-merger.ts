@@ -82,9 +82,9 @@ export function buildMergedSettings(userSettings: Settings, port: number): Setti
 
 export function buildMergedCodexHooks(userHooksFile: HooksConfig, port: number): HooksConfig {
   const hooks = buildBaseHooks(userHooksFile, port);
-  // Codex 使用 AfterToolUse（映射到内部 PostToolUse 处理）
-  hooks.AfterToolUse = [
-    ...(hooks.AfterToolUse ?? []),
+  // Codex 原生 hooks 使用 PostToolUse。
+  hooks.PostToolUse = [
+    ...(hooks.PostToolUse ?? []),
     createHookRule(port, 'PostToolUse')
   ];
   return {

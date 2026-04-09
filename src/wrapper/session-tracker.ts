@@ -1,7 +1,9 @@
 import type Database from 'better-sqlite3';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { GitSnapshot } from '../utils/git.js';
 import type { FileOperation } from './file-change-collector.js';
-import { insertSnapshot, insertTurn, insertFileChanges, type FileChangeRecord } from '../store/snapshot-store.js';
+import { insertTurn, insertFileChanges, type FileChangeRecord } from '../store/snapshot-store.js';
 
 interface SessionState {
   turn: number;
@@ -14,8 +16,8 @@ interface SessionState {
     added: number;
     removed: number;
   };
+  absAddedTotal: number;
   lastReportTurn: number;
-  prevSnapshotId: number;
 }
 
 interface StartPayload {
@@ -27,6 +29,7 @@ interface StopPayload {
   session_id: string;
   cwd: string;
   last_assistant_message?: string;
+  user_prompt?: string;
 }
 
 export interface TrackerTurnRecord {
@@ -47,11 +50,14 @@ export interface TrackerTurnRecord {
   diffContent: string;
   lastAssistantMessage: string;
   operations: FileOperation[];
+  userPrompt: string;
+  patchPath: string;
 }
 
 export function createSessionTracker(deps: {
   collectGitSnapshot: (cwd: string) => Promise<GitSnapshot>;
   db: Database.Database;
+  patchesDir: string;
   threshold: number;
   minTurnsBetween: number;
   onAutoReport: (sessionId: string) => Promise<void>;
@@ -61,22 +67,13 @@ export function createSessionTracker(deps: {
 
   async function onSessionStart(payload: StartPayload): Promise<GitSnapshot> {
     const snapshot = await deps.collectGitSnapshot(payload.cwd);
-    const snapshotId = insertSnapshot(deps.db, {
-      sessionId: payload.session_id,
-      turn: null,
-      headHash: snapshot.headHash,
-      totalAdded: snapshot.cumulative.added,
-      totalRemoved: snapshot.cumulative.removed,
-      fileCount: snapshot.filesChanged.length + snapshot.newFiles.length,
-      diffContent: snapshot.diffContent
-    });
     sessions.set(payload.session_id, {
       turn: 0,
       prevHead: snapshot.headHash,
       prevCumulative: snapshot.cumulative,
       sessionTotal: { added: 0, removed: 0 },
-      lastReportTurn: 0,
-      prevSnapshotId: snapshotId
+      absAddedTotal: 0,
+      lastReportTurn: 0
     });
     return snapshot;
   }
@@ -100,15 +97,13 @@ export function createSessionTracker(deps: {
     state.turn += 1;
     const currentTurn = state.turn;
 
-    const endSnapshotId = insertSnapshot(deps.db, {
-      sessionId: payload.session_id,
-      turn: currentTurn,
-      headHash: snapshot.headHash,
-      totalAdded: snapshot.cumulative.added,
-      totalRemoved: snapshot.cumulative.removed,
-      fileCount: snapshot.filesChanged.length + snapshot.newFiles.length,
-      diffContent: snapshot.diffContent
-    });
+    // Write .patch file
+    const patchDir = join(deps.patchesDir, payload.session_id);
+    mkdirSync(patchDir, { recursive: true });
+    const patchFileName = `turn-${String(currentTurn).padStart(3, '0')}.patch`;
+    const patchFilePath = join(patchDir, patchFileName);
+    const patchContent = snapshot.diffContent || '# no changes detected\n';
+    writeFileSync(patchFilePath, patchContent, 'utf8');
 
     // Drain PostToolUse operations and insert as file_changes
     const operations = deps.drainOperations?.(payload.session_id) ?? [];
@@ -129,28 +124,31 @@ export function createSessionTracker(deps: {
       insertFileChanges(deps.db, payload.session_id, currentTurn, fileChanges);
     }
 
+    const userPrompt = payload.user_prompt ?? '';
+
     insertTurn(deps.db, {
       sessionId: payload.session_id,
       turn: currentTurn,
-      startSnapshotId: state.prevSnapshotId,
-      endSnapshotId,
+      startSnapshotId: null,
+      endSnapshotId: null,
       timestamp: Date.now(),
       headHash: snapshot.headHash,
       commitDetected,
       deltaAdded: delta.added,
       deltaRemoved: delta.removed,
       lastAssistantMessage: payload.last_assistant_message ?? null,
-      operationsJson: operations.length > 0 ? JSON.stringify(operations) : null
+      operationsJson: operations.length > 0 ? JSON.stringify(operations) : null,
+      userPrompt: userPrompt || null,
+      patchPath: patchFilePath
     });
 
     state.prevHead = snapshot.headHash;
     state.prevCumulative = snapshot.cumulative;
-    state.prevSnapshotId = endSnapshotId;
     state.sessionTotal.added += Math.max(0, delta.added);
     state.sessionTotal.removed += Math.max(0, delta.removed);
+    state.absAddedTotal += Math.abs(delta.added);
 
-    const total = state.sessionTotal.added + state.sessionTotal.removed;
-    // 设计意图：首个达到阈值的回合应立即触发报告，后续再按最小回合间隔节流。
+    const total = state.absAddedTotal;
     const intervalSatisfied =
       state.lastReportTurn === 0 || state.turn - state.lastReportTurn >= deps.minTurnsBetween;
     if (total >= deps.threshold && intervalSatisfied) {
@@ -169,7 +167,9 @@ export function createSessionTracker(deps: {
       newFiles: snapshot.newFiles,
       diffContent: snapshot.diffContent,
       lastAssistantMessage: payload.last_assistant_message ?? '',
-      operations
+      operations,
+      userPrompt,
+      patchPath: patchFilePath
     };
   }
 

@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 3;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS turns (
   delta_removed          INTEGER DEFAULT 0,
   last_assistant_message TEXT,
   operations_json        TEXT,
+  user_prompt            TEXT,
+  patch_path             TEXT,
   PRIMARY KEY (session_id, turn)
 );
 
@@ -64,11 +66,13 @@ CREATE TABLE IF NOT EXISTS reports (
   session_id    TEXT NOT NULL REFERENCES sessions(id),
   generated_at  INTEGER NOT NULL,
   html_path     TEXT NOT NULL,
+  trigger_turn  INTEGER,
   trigger_type  TEXT,
   totals_json   TEXT,
   analysis_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_reports_session ON reports(session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_session_turn ON reports(session_id, trigger_turn);
 
 CREATE TABLE IF NOT EXISTS agent_outputs (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,7 +85,7 @@ CREATE TABLE IF NOT EXISTS agent_outputs (
 );
 `;
 
-export function openDatabase(dbPath: string): Database {
+export function openDatabase(dbPath: string): Database.Database {
   mkdirSync(dirname(dbPath), { recursive: true });
 
   const db = new Database(dbPath);
@@ -92,10 +96,22 @@ export function openDatabase(dbPath: string): Database {
   db.pragma('busy_timeout = 5000');
   db.pragma('foreign_keys = ON');
 
-  const userVersion = db.pragma('user_version', { simple: true }) as number;
-  if (userVersion < SCHEMA_VERSION) {
+  let userVersion = db.pragma('user_version', { simple: true }) as number;
+  if (userVersion < 1) {
     db.exec(SCHEMA_SQL);
     db.pragma(`user_version = ${SCHEMA_VERSION}`);
+    userVersion = SCHEMA_VERSION;
+  }
+  if (userVersion < 2) {
+    // 兼容从 v1 升级：为报告去重引入 turn 维度。
+    db.exec('ALTER TABLE reports ADD COLUMN trigger_turn INTEGER');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_session_turn ON reports(session_id, trigger_turn)');
+    db.pragma('user_version = 2');
+  }
+  if (userVersion < 3) {
+    db.exec('ALTER TABLE turns ADD COLUMN user_prompt TEXT');
+    db.exec('ALTER TABLE turns ADD COLUMN patch_path TEXT');
+    db.pragma('user_version = 3');
   }
 
   return db;

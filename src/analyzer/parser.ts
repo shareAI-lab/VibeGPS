@@ -3,6 +3,7 @@ export interface AnalyzerResult {
   intent: string;
   risks: string[];
   highlights: string[];
+  intentMatch?: 'full' | 'partial' | 'deviated';
 }
 
 function tryParse(raw: string): AnalyzerResult | null {

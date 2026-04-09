@@ -49,12 +49,15 @@ export interface TurnRecord {
   deltaRemoved: number;
   lastAssistantMessage: string | null;
   operationsJson: string | null;
+  userPrompt: string | null;
+  patchPath: string | null;
 }
 
 export interface ReportRecord {
   sessionId: string;
   generatedAt: number;
   htmlPath: string;
+  triggerTurn: number | null;
   triggerType: string | null;
   totalsJson: string | null;
   analysisJson: string | null;
@@ -152,8 +155,8 @@ export function insertFileChanges(
 
 export function insertTurn(db: Database.Database, turn: TurnRecord): void {
   db.prepare(
-    `INSERT INTO turns (session_id, turn, start_snapshot_id, end_snapshot_id, timestamp, head_hash, commit_detected, delta_added, delta_removed, last_assistant_message, operations_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO turns (session_id, turn, start_snapshot_id, end_snapshot_id, timestamp, head_hash, commit_detected, delta_added, delta_removed, last_assistant_message, operations_json, user_prompt, patch_path)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     turn.sessionId,
     turn.turn,
@@ -165,18 +168,21 @@ export function insertTurn(db: Database.Database, turn: TurnRecord): void {
     turn.deltaAdded,
     turn.deltaRemoved,
     turn.lastAssistantMessage ?? null,
-    turn.operationsJson ?? null
+    turn.operationsJson ?? null,
+    turn.userPrompt ?? null,
+    turn.patchPath ?? null
   );
 }
 
 export function insertReport(db: Database.Database, report: ReportRecord): void {
   db.prepare(
-    `INSERT INTO reports (session_id, generated_at, html_path, trigger_type, totals_json, analysis_json)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT OR IGNORE INTO reports (session_id, generated_at, html_path, trigger_turn, trigger_type, totals_json, analysis_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   ).run(
     report.sessionId,
     report.generatedAt,
     report.htmlPath,
+    report.triggerTurn ?? null,
     report.triggerType ?? null,
     report.totalsJson ?? null,
     report.analysisJson ?? null
@@ -249,7 +255,9 @@ export function getTurns(db: Database.Database, sessionId: string): TurnRecord[]
     deltaAdded: row.delta_added as number,
     deltaRemoved: row.delta_removed as number,
     lastAssistantMessage: (row.last_assistant_message as string | null) ?? null,
-    operationsJson: (row.operations_json as string | null) ?? null
+    operationsJson: (row.operations_json as string | null) ?? null,
+    userPrompt: (row.user_prompt as string | null) ?? null,
+    patchPath: (row.patch_path as string | null) ?? null
   }));
 }
 
@@ -306,6 +314,7 @@ export function getReports(db: Database.Database, sessionId: string): ReportReco
     sessionId: row.session_id as string,
     generatedAt: row.generated_at as number,
     htmlPath: row.html_path as string,
+    triggerTurn: (row.trigger_turn as number | null) ?? null,
     triggerType: (row.trigger_type as string | null) ?? null,
     totalsJson: (row.totals_json as string | null) ?? null,
     analysisJson: (row.analysis_json as string | null) ?? null

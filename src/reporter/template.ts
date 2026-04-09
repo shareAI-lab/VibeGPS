@@ -8,6 +8,7 @@ export interface TurnSummary {
   lastAssistantMessage: string;
   diffContent?: string;
   operations?: { tool: string; filePath: string }[];
+  userPrompt?: string;
 }
 
 export interface FileHeatmapEntry {
@@ -35,6 +36,7 @@ export interface ReportTemplateData {
     intent: string;
     risks: string[];
     highlights: string[];
+    intentMatch?: string;
   };
   turnSummaries: TurnSummary[];
   fileHeatmap: FileHeatmapEntry[];
@@ -164,6 +166,7 @@ export function buildReportHtml(data: ReportTemplateData): string {
           ${opBadges}
         </div>
         ${t.lastAssistantMessage ? `<p class="assistant-msg">${escapeHtml(truncateMessage(t.lastAssistantMessage))}</p>` : ''}
+        ${t.userPrompt ? `<p class="user-prompt">👤 ${escapeHtml(truncateMessage(t.userPrompt, 120))}</p>` : ''}
         ${diffSection}
       </div>`;
       }
@@ -279,6 +282,11 @@ export function buildReportHtml(data: ReportTemplateData): string {
     .timeline-header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 13px; }
     .turn-num { font-weight: bold; font-size: 14px; }
     .assistant-msg { margin: 4px 0 0; color: var(--text-secondary); font-size: 13px; font-style: italic; }
+    .user-prompt { margin: 2px 0 0; color: var(--accent); font-size: 13px; font-weight: 500; }
+    .intent-match { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 12px; font-weight: bold; }
+    .intent-match-full { background: var(--green); color: #0d1117; }
+    .intent-match-partial { background: var(--orange); color: #0d1117; }
+    .intent-match-deviated { background: var(--red); color: #fff; }
     .turn-diff { margin-top: 6px; }
     .turn-diff summary { font-size: 12px; padding: 2px 0; color: var(--text-secondary); }
     .turn-diff summary:hover { color: var(--accent); }
@@ -330,6 +338,7 @@ export function buildReportHtml(data: ReportTemplateData): string {
       <h2>🤖 AI 分析</h2>
       <p><strong>摘要：</strong>${escapeHtml(data.analysis.summary)}</p>
       <p><strong>意图：</strong>${escapeHtml(data.analysis.intent)}</p>
+      ${data.analysis.intentMatch ? `<p><strong>意图匹配度：</strong><span class="intent-match intent-match-${data.analysis.intentMatch}">${data.analysis.intentMatch === 'full' ? '完全匹配' : data.analysis.intentMatch === 'partial' ? '部分匹配' : '偏离意图'}</span></p>` : ''}
       <p><strong>⚠️ 风险：</strong></p>
       <ul>${risks.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
       <p><strong>✨ 亮点：</strong></p>

@@ -35,6 +35,8 @@ describe('settings merger', () => {
     expect(merged.hooks?.SessionStart).toHaveLength(2);
     expect(merged.hooks?.Stop).toHaveLength(1);
     expect(merged.hooks?.UserPromptSubmit).toHaveLength(1);
+    expect(merged.hooks?.PostToolUse).toHaveLength(1);
     expect(merged.hooks?.Stop?.[0]?.hooks?.[0]?.command).toContain('7788 Stop');
+    expect(merged.hooks?.PostToolUse?.[0]?.hooks?.[0]?.command).toContain('7788 PostToolUse');
   });
 });

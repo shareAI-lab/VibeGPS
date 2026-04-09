@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
 import { runAnalyzer } from '../analyzer/agent-runner.js';
 import { parseLLMResult } from '../analyzer/parser.js';
 import { REPORTS_DIR, SESSIONS_DIR, VIBEGPS_HOME } from '../constants.js';
@@ -62,7 +63,16 @@ function operationsToDiff(ops: FileOperation[]): string {
   return chunks.join('\n');
 }
 
-function buildTurnSummaries(turns: TurnRecord[]): TurnSummary[] {
+function readPatchContent(patchPath: string | null): string {
+  if (!patchPath) return '';
+  try {
+    return readFileSync(patchPath, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function buildTurnSummaries(turns: TurnRecord[], userPromptByTurn?: Map<number, string>): TurnSummary[] {
   return turns.map((t) => {
     const hasOperations = t.operations && t.operations.length > 0;
     const diffContent = hasOperations
@@ -78,7 +88,8 @@ function buildTurnSummaries(turns: TurnRecord[]): TurnSummary[] {
       commitDetected: t.commitDetected,
       lastAssistantMessage: t.lastAssistantMessage,
       diffContent,
-      operations: t.operations ?? []
+      operations: t.operations ?? [],
+      userPrompt: userPromptByTurn?.get(t.turn)
     };
   });
 }
@@ -117,7 +128,10 @@ export async function generateReport(input: {
   files: string[];
   diff: string;
   lastAssistantMessage: string;
+  userPrompt?: string;
   turns: TurnRecord[];
+  userPromptByTurn?: Map<number, string>;
+  disableCodexCli?: boolean;
 }, deps?: {
   runAnalyzerFn?: typeof runAnalyzer;
 }) {
@@ -128,7 +142,10 @@ export async function generateReport(input: {
       stat: `+${input.totals.added} -${input.totals.removed}`,
       files: input.files,
       lastAssistantMessage: input.lastAssistantMessage,
-      diff: input.diff
+      diff: input.diff,
+      userPrompt: input.userPrompt
+    }, undefined, undefined, undefined, {
+      disableCodexCli: input.disableCodexCli ?? false
     });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -145,7 +162,7 @@ export async function generateReport(input: {
       highlights: ['已输出完整变更明细']
     };
 
-  const turnSummaries = buildTurnSummaries(input.turns);
+  const turnSummaries = buildTurnSummaries(input.turns, input.userPromptByTurn);
   const fileHeatmap = buildFileHeatmap(input.turns);
 
   const reportPath = await renderHtmlReport(input.reportRoot, {
@@ -247,6 +264,7 @@ export async function orchestrateReportFromDb(
     reportsDir: string;
     vibegpsHome?: string;
     triggerType?: string;
+    triggerTurn?: number;
   }
 ): Promise<{ sessionId: string; output: string; compactOutput: string; reportPath: string }> {
   const session = dbGetSession(db, sessionId);
@@ -260,22 +278,31 @@ export async function orchestrateReportFromDb(
   const uniqueFiles = heatmap.map(h => h.file);
   const delta = dbGetSessionTotalDelta(db, sessionId);
 
-  // 获取最新 turn 的 diff content
+  // 获取最新 turn 的 diff content: patch file → operationsToDiff → empty
   const latestTurn = dbTurns[dbTurns.length - 1];
-  const snapshotRow = db.prepare('SELECT diff_content FROM snapshots WHERE id = ?').get(latestTurn.endSnapshotId) as { diff_content: string | null } | undefined;
-  const diff = snapshotRow?.diff_content ?? dbTurns.map(t => {
-    if (t.operationsJson) {
-      try {
-        const ops = JSON.parse(t.operationsJson) as FileOperation[];
-        return operationsToDiff(ops);
-      } catch { /* fallback */ }
-    }
-    return '';
-  }).filter(Boolean).join('\n');
+  let diff = readPatchContent(latestTurn.patchPath);
+  if (!diff) {
+    diff = dbTurns.map(t => {
+      if (t.operationsJson) {
+        try {
+          const ops = JSON.parse(t.operationsJson) as FileOperation[];
+          return operationsToDiff(ops);
+        } catch { /* fallback */ }
+      }
+      return '';
+    }).filter(Boolean).join('\n');
+  }
 
   const vibegpsHome = options?.vibegpsHome ?? VIBEGPS_HOME;
   const config = await loadConfig(vibegpsHome);
   const lastAssistantMessage = latestTurn.lastAssistantMessage ?? '';
+  const userPrompt = latestTurn.userPrompt ?? '';
+  const userPromptByTurn = new Map<number, string>();
+  for (const t of dbTurns) {
+    if (t.userPrompt) {
+      userPromptByTurn.set(t.turn, t.userPrompt);
+    }
+  }
 
   // Convert DB turn records to session-store TurnRecord format for generateReport compatibility
   const turns: TurnRecord[] = dbTurns.map(t => ({
@@ -305,7 +332,10 @@ export async function orchestrateReportFromDb(
     files: uniqueFiles.map(f => `${f} (changed)`),
     diff,
     lastAssistantMessage,
-    turns
+    userPrompt,
+    turns,
+    userPromptByTurn,
+    disableCodexCli: session.agent === 'codex'
   });
 
   // 记录报告到数据库
@@ -313,6 +343,7 @@ export async function orchestrateReportFromDb(
     sessionId,
     generatedAt: Date.now(),
     htmlPath: result.reportPath,
+    triggerTurn: options.triggerTurn ?? null,
     triggerType: options.triggerType ?? null,
     totalsJson: JSON.stringify(result),
     analysisJson: null
